@@ -397,8 +397,9 @@ static void set_graphic_mode(void)
 
 bool vic_emulate(void)
 {
-    /* re-raise interrupt if there are unacknowledged ones */
-    if ((vic_read_register(0x19) & 0x80) != 0)
+    /* re-raise interrupt if there are unacknowledged ones (inline check of
+       irq_status instead of a vic_read_register call per raster line) */
+    if (irq_status & 0x0f)
         cpu_irq();
 
     /* wrap-safe: 24-bit cycle counter overflows every ~17 emulated seconds */
@@ -452,9 +453,9 @@ bool vic_emulate(void)
             frame_count++;
             /* KERNAL boot (~300 frames) only needs occasional refreshes. */
             if (frame_count < 300)
-                render_frame = ((frame_count & 7) == 0);
+                render_frame = ((frame_count & 15) == 0);
             else
-                render_frame = ((frame_count & 1) == 0);
+                render_frame = ((frame_count & 7) == 0);
             set_raster_counter(0);
         }
     }

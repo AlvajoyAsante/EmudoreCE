@@ -29,8 +29,9 @@ extern uint8_t  cpu_illegal_op;
 extern uint16_t cpu_illegal_pc;
 
 void cpu_reset(void);
-/* Execute one instruction. Returns false on an illegal opcode. */
-bool cpu_emulate(void);
+/* Execute instructions until cpu.cycles reaches until_cycles (wrap-safe).
+   Returns false on an illegal opcode. */
+bool cpu_run(unsigned int until_cycles);
 void cpu_irq(void);
 void cpu_nmi(void);
 

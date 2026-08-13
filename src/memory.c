@@ -19,7 +19,9 @@
    The ROMs only need their real 20 KiB, kept as static arrays in BSS. */
 #define MEM_RAM_VRAM ((uint8_t *)0xD52C00)
 
-static uint8_t *mem_ram;
+uint8_t *mem_ram;
+MemPage mem_rd_pg[256];
+MemPage mem_wr_pg[256];
 static uint8_t rom_basic[0x2000];
 static uint8_t rom_kernal[0x2000];
 static uint8_t rom_chars[0x1000];
@@ -64,102 +66,54 @@ void mem_setup_banks(uint8_t v)
     else
         banks[MEM_BANK_CHAREN] = MEM_BANK_ROM;
 
+    /* Rebuild the fast page tables (pointers are biased so p[addr] works). */
+    for (i = 0; i < 256; ++i)
+    {
+        mem_rd_pg[i].ptr = mem_ram;
+        mem_wr_pg[i].ptr = mem_ram;
+    }
+    if (banks[MEM_BANK_BASIC] == MEM_BANK_ROM)
+        for (i = 0xa0; i <= 0xbf; ++i)
+            mem_rd_pg[i].ptr = rom_basic - ADDR_BASIC;
+    if (banks[MEM_BANK_KERNAL] == MEM_BANK_ROM)
+        for (i = 0xe0; i <= 0xff; ++i)
+            mem_rd_pg[i].ptr = rom_kernal - ADDR_KERNAL;
+    if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
+    {
+        for (i = 0xd0; i <= 0xd3; ++i)
+            mem_rd_pg[i].ptr = mem_wr_pg[i].ptr = NULL;   /* VIC  */
+        mem_rd_pg[0xdc].ptr = mem_wr_pg[0xdc].ptr = NULL; /* CIA1 */
+        mem_rd_pg[0xdd].ptr = mem_wr_pg[0xdd].ptr = NULL; /* CIA2 */
+    }
+    else if (banks[MEM_BANK_CHAREN] == MEM_BANK_ROM)
+    {
+        for (i = 0xd0; i <= 0xd3; ++i)
+            mem_rd_pg[i].ptr = rom_chars - ADDR_CHARS;
+    }
+
     mem_write_byte_no_io(ADDR_MEM_LAYOUT, v);
 }
 
-void mem_write_byte_no_io(uint16_t addr, uint8_t v)
-{
-    mem_ram[addr] = v;
-}
-
-void mem_write_byte(uint16_t addr, uint8_t v)
+/* Slow paths for the NULL (IO) pages of the tables in memory.h. */
+uint8_t mem_read_io(uint16_t addr)
 {
     uint16_t page = addr & 0xff00;
-
-    if (page == ADDR_ZERO_PAGE)
-    {
-        if (addr == ADDR_MEM_LAYOUT)
-            mem_setup_banks(v);
-        else
-            mem_ram[addr] = v;
-    }
-    else if (page >= ADDR_VIC_FIRST_PAGE && page <= ADDR_VIC_LAST_PAGE)
-    {
-        if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
-            vic_write_register(addr & 0x7f, v);
-        else
-            mem_ram[addr] = v;
-    }
-    else if (page == ADDR_CIA1_PAGE)
-    {
-        if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
-            cia1_write_register(addr & 0x0f, v);
-        else
-            mem_ram[addr] = v;
-    }
-    else if (page == ADDR_CIA2_PAGE)
-    {
-        if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
-            cia2_write_register(addr & 0x0f, v);
-        else
-            mem_ram[addr] = v;
-    }
-    else
-    {
-        mem_ram[addr] = v;
-    }
+    if (page == ADDR_CIA1_PAGE)
+        return cia1_read_register(addr & 0x0f);
+    if (page == ADDR_CIA2_PAGE)
+        return cia2_read_register(addr & 0x0f);
+    return vic_read_register(addr & 0x7f);
 }
 
-uint8_t mem_read_byte(uint16_t addr)
+void mem_write_io(uint16_t addr, uint8_t v)
 {
-    uint8_t retval = 0;
     uint16_t page = addr & 0xff00;
-
-    if (page >= ADDR_VIC_FIRST_PAGE && page <= ADDR_VIC_LAST_PAGE)
-    {
-        if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
-            retval = vic_read_register(addr & 0x7f);
-        else if (banks[MEM_BANK_CHAREN] == MEM_BANK_ROM)
-            retval = rom_chars[addr - ADDR_CHARS];
-        else
-            retval = mem_ram[addr];
-    }
-    else if (page == ADDR_CIA1_PAGE)
-    {
-        if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
-            retval = cia1_read_register(addr & 0x0f);
-        else
-            retval = mem_ram[addr];
-    }
+    if (page == ADDR_CIA1_PAGE)
+        cia1_write_register(addr & 0x0f, v);
     else if (page == ADDR_CIA2_PAGE)
-    {
-        if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
-            retval = cia2_read_register(addr & 0x0f);
-        else
-            retval = mem_ram[addr];
-    }
-    else if (page >= ADDR_BASIC_FIRST && page <= ADDR_BASIC_LAST)
-    {
-        retval = (banks[MEM_BANK_BASIC] == MEM_BANK_ROM)
-                     ? rom_basic[addr - ADDR_BASIC]
-                     : mem_ram[addr];
-    }
-    else if (page >= ADDR_KERNAL_FIRST)
-    {
-        retval = (banks[MEM_BANK_KERNAL] == MEM_BANK_ROM)
-                     ? rom_kernal[addr - ADDR_KERNAL]
-                     : mem_ram[addr];
-    }
+        cia2_write_register(addr & 0x0f, v);
     else
-    {
-        retval = mem_ram[addr];
-    }
-    return retval;
-}
-
-uint8_t mem_read_byte_no_io(uint16_t addr)
-{
-    return mem_ram[addr];
+        vic_write_register(addr & 0x7f, v);
 }
 
 uint8_t *mem_basic_rom_ptr(void)
@@ -180,16 +134,6 @@ uint8_t *mem_chars_rom_ptr(void)
 uint8_t *mem_ram_ptr(void)
 {
     return mem_ram;
-}
-
-uint16_t mem_read_word(uint16_t addr)
-{
-    return mem_read_byte(addr) | (mem_read_byte(addr + 1) << 8);
-}
-
-uint16_t mem_read_word_no_io(uint16_t addr)
-{
-    return mem_read_byte_no_io(addr) | (mem_read_byte_no_io(addr + 1) << 8);
 }
 
 void mem_write_word(uint16_t addr, uint16_t v)

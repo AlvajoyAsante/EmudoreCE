@@ -29,29 +29,36 @@ uint16_t cpu_illegal_pc;
 #define PC() (cpu.pc)
 
 /* ---- helpers ---------------------------------------------------------- */
+/* always_inline: -Oz outlines these otherwise, adding 1-3 calls per emulated
+   instruction in the hottest loop of the program. */
 
-static uint8_t load_byte(uint16_t addr)
+__attribute__((__always_inline__))
+static inline uint8_t load_byte(uint16_t addr)
 {
     return mem_read_byte(addr);
 }
 
-static void push(uint8_t v)
+__attribute__((__always_inline__))
+static inline void push(uint8_t v)
 {
     mem_write_byte(ADDR_STACK + cpu.sp, v);
     cpu.sp--;
 }
 
-static uint8_t pop(void)
+__attribute__((__always_inline__))
+static inline uint8_t pop(void)
 {
     return load_byte((uint16_t)(++cpu.sp + ADDR_STACK));
 }
 
-static uint8_t fetch_op(void)
+__attribute__((__always_inline__))
+static inline uint8_t fetch_op(void)
 {
     return load_byte(cpu.pc++);
 }
 
-static uint16_t fetch_opw(void)
+__attribute__((__always_inline__))
+static inline uint16_t fetch_opw(void)
 {
     uint16_t v = mem_read_word(cpu.pc);
     cpu.pc += 2;
@@ -88,15 +95,18 @@ static void set_flags(uint8_t v)
 }
 
 /* ---- addressing modes ------------------------------------------------- */
+/* always_inline: one of these runs per memory-operand instruction. */
 
-static uint16_t addr_zero(void)  { return fetch_op(); }
-static uint16_t addr_zerox(void) { return (fetch_op() + cpu.x) & 0xff; }
-static uint16_t addr_zeroy(void) { return (fetch_op() + cpu.y) & 0xff; }
-static uint16_t addr_abs(void)   { return fetch_opw(); }
-static uint16_t addr_absx(void)  { return fetch_opw() + cpu.x; }
-static uint16_t addr_absy(void)  { return fetch_opw() + cpu.y; }
-static uint16_t addr_indx(void)  { return mem_read_word((addr_zero() + cpu.x) & 0xff); }
-static uint16_t addr_indy(void)  { return mem_read_word(addr_zero()) + cpu.y; }
+#define AM_INLINE __attribute__((__always_inline__)) static inline
+
+AM_INLINE uint16_t addr_zero(void)  { return fetch_op(); }
+AM_INLINE uint16_t addr_zerox(void) { return (fetch_op() + cpu.x) & 0xff; }
+AM_INLINE uint16_t addr_zeroy(void) { return (fetch_op() + cpu.y) & 0xff; }
+AM_INLINE uint16_t addr_abs(void)   { return fetch_opw(); }
+AM_INLINE uint16_t addr_absx(void)  { return fetch_opw() + cpu.x; }
+AM_INLINE uint16_t addr_absy(void)  { return fetch_opw() + cpu.y; }
+AM_INLINE uint16_t addr_indx(void)  { return mem_read_word((addr_zero() + cpu.x) & 0xff); }
+AM_INLINE uint16_t addr_indy(void)  { return mem_read_word(addr_zero()) + cpu.y; }
 
 /* ---- data handling / memory ------------------------------------------- */
 
@@ -402,7 +412,8 @@ void cpu_nmi(void)
     tick(7);
 }
 
-bool cpu_emulate(void)
+__attribute__((__always_inline__))
+static inline bool cpu_step(void)
 {
     uint8_t insn = fetch_op();
     bool retval = true;
@@ -566,4 +577,16 @@ bool cpu_emulate(void)
         retval = false;
     }
     return retval;
+}
+
+/* Single caller of cpu_step, so the step (and its huge switch) is inlined
+   here: one function frame per raster-line batch instead of per instruction. */
+bool cpu_run(unsigned int until_cycles)
+{
+    do
+    {
+        if (!cpu_step())
+            return false;
+    } while ((int)(cpu.cycles - until_cycles) < 0);
+    return true;
 }

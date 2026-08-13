@@ -60,7 +60,7 @@ void mem_init(void);
 void mem_shutdown(void);
 void mem_setup_banks(uint8_t v);
 
-/* non-zero once RAM/ROM backing buffers were allocated */
+/* non-zero once RAM/RAM backing buffers were allocated */
 int mem_ready(void);
 
 /* direct access to the ROM/RAM images, used by the ROM loader */
@@ -69,14 +69,89 @@ uint8_t *mem_kernal_rom_ptr(void);
 uint8_t *mem_chars_rom_ptr(void);
 uint8_t *mem_ram_ptr(void);
 
-uint8_t  mem_read_byte(uint16_t addr);
-uint8_t  mem_read_byte_no_io(uint16_t addr);
-void     mem_write_byte(uint16_t addr, uint8_t v);
-void     mem_write_byte_no_io(uint16_t addr, uint8_t v);
-uint16_t mem_read_word(uint16_t addr);
-uint16_t mem_read_word_no_io(uint16_t addr);
-void     mem_write_word(uint16_t addr, uint16_t v);
-void     mem_write_word_no_io(uint16_t addr, uint16_t v);
+/* Page-table dispatch: one biased host pointer per 256-byte C64 page
+   (p[addr] hits the right byte directly). NULL = IO page, take the slow
+   path. Rebuilt by mem_setup_banks on every $0001 write.
+   Entries are padded to 4 bytes: indexing by *4 is an inline shift, while a
+   3-byte pointer stride made ez80-clang call the __imulu helper per access. */
+typedef union
+{
+    uint8_t *ptr;
+    uint32_t pad_;
+} MemPage;
+
+/* Byte view of a 16-bit address: reading .b.hi replaces `addr >> 8`, which
+   ez80-clang otherwise lowers to a __ishru helper CALL per access. */
+typedef union
+{
+    uint16_t w;
+    struct { uint8_t lo, hi; } b;
+} U16B;
+
+extern uint8_t *mem_ram;
+extern MemPage mem_rd_pg[256];
+extern MemPage mem_wr_pg[256];
+uint8_t mem_read_io(uint16_t addr);
+void    mem_write_io(uint16_t addr, uint8_t v);
+
+/* Inlined hot paths: every 6502 instruction does 2-4 of these. always_inline
+   because -Oz otherwise outlines them into local functions (call overhead). */
+__attribute__((__always_inline__))
+static inline uint8_t mem_read_byte(uint16_t addr)
+{
+    U16B a;
+    const uint8_t *p;
+    a.w = addr;
+    p = mem_rd_pg[a.b.hi].ptr;
+    return p ? p[addr] : mem_read_io(addr);
+}
+
+__attribute__((__always_inline__))
+static inline void mem_write_byte(uint16_t addr, uint8_t v)
+{
+    U16B a;
+    uint8_t *p;
+    a.w = addr;
+    p = mem_wr_pg[a.b.hi].ptr;
+    if (p)
+    {
+        p[addr] = v;
+        if (addr == ADDR_MEM_LAYOUT)
+            mem_setup_banks(v);
+    }
+    else
+        mem_write_io(addr, v);
+}
+
+static inline uint8_t mem_read_byte_no_io(uint16_t addr)
+{
+    return mem_ram[addr];
+}
+
+static inline void mem_write_byte_no_io(uint16_t addr, uint8_t v)
+{
+    mem_ram[addr] = v;
+}
+
+__attribute__((__always_inline__))
+static inline uint16_t mem_read_word(uint16_t addr)
+{
+    U16B r;
+    r.b.lo = mem_read_byte(addr);
+    r.b.hi = mem_read_byte((uint16_t)(addr + 1));
+    return r.w;
+}
+
+static inline uint16_t mem_read_word_no_io(uint16_t addr)
+{
+    U16B r;
+    r.b.lo = mem_ram[addr];
+    r.b.hi = mem_ram[(uint16_t)(addr + 1)];
+    return r.w;
+}
+
+void mem_write_word(uint16_t addr, uint16_t v);
+void mem_write_word_no_io(uint16_t addr, uint16_t v);
 
 /* VIC-II view of memory (always RAM except character ROM windows). */
 uint8_t  mem_vic_read_byte(uint16_t addr);

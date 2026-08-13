@@ -102,16 +102,13 @@ void c64_init(void)
 
 void c64_run(void)
 {
-    /* The CPU runs in a tight batch until the next raster line is due (the
-       per-instruction vic/cia/io calls were pure overhead). Comparisons are
-       wrap-safe: cpu.cycles is a 24-bit int on the eZ80 and wraps every ~17
-       emulated seconds. */
+    /* cpu_run executes a whole raster line's worth of instructions per call;
+       CIA timers tick per line, keypad IO every 8 lines. */
     unsigned int line = 0;
     for (;;)
     {
-        while ((int)(cpu.cycles - vic_raster_due) < 0)
-            if (!cpu_emulate())
-                return;
+        if (!cpu_run(vic_raster_due))
+            return;
         if (!vic_emulate())
             return;
         cia1_emulate();
