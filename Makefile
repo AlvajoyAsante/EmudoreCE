@@ -11,13 +11,12 @@ LTO          := NO
 
 # ----------------------------
 
-CFLAGS ?= -Wall -Wextra -O2 -fno-strict-aliasing
+# -Oz (CEdev standard) on purpose: -O2 triggers ez80-clang register-allocator
+# bugs that clobber the IX frame pointer mid-function (io_init/io_emulate/
+# vic_emulate all miscompiled -> MMIO corruption and NMI resets).
+CFLAGS ?= -Wall -Wextra -Oz -fno-strict-aliasing
 
-# Memory layout: all CEdev defaults (BSSHEAP_HIGH / LOAD_ADDR / STACK_HIGH are
-# untouched). The 128 KiB C64 RAM+ROM are NOT in BSS; they are allocated at
-# runtime as an AppVar (see memory.c), so no layout overrides are needed.
 
-# Sources are auto-globbed from src/ (recursive *.c).
 
 # ----------------------------
 

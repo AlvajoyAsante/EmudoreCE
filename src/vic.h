@@ -16,6 +16,9 @@ void    vic_write_register(uint8_t r, uint8_t v);
 uint8_t vic_read_register(uint8_t r);
 unsigned int vic_frames(void);
 
+/* diagnostics: unsupported graphic mode that stopped vic_emulate */
+extern uint8_t vic_bad_mode;
+
 /* timing / geometry */
 #define VIC_SCREEN_LINES        312
 #define VIC_SCREEN_COLS         504

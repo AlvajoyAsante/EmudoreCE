@@ -2,11 +2,10 @@
  * emudore-CE: calculator screen + keypad replacing the SDL2 IO backend.
  *
  * SCREEN FIT
- *   The C64 visible area is 403x284 but the CE LCD is only 320x240, so we
- *   crop the side/top/bottom borders down to the 344x244 region that contains
- *   the 320x200 text area plus a minimal border, then squeeze 344 -> 320
- *   horizontally by taking 15 of every 16 source columns. Characters stay
- *   readable (no per-pixel rescale) and the full 40-column screen is shown.
+ *   The C64 text area is exactly 320x200, a perfect width match for the
+ *   320x240 LCD. We crop the borders away 1:1 (no rescaling) and centre the
+ *   200 text lines vertically, so the 20-line bands above/below show the real
+ *   border colour. Every LCD row is repainted each frame - no stale pixels.
  *
  * KEYBOARD
  *   The CE keypad is scanned into the C64 keyboard matrix each frame. Letter
@@ -18,26 +17,25 @@
 #include <keypadc.h>
 #include <string.h>
 #include "io.h"
+#include "vic.h"
 #include "util.h"
 
 #define LCD_W 320
 #define LCD_H 240
 
-/* Crop window inside the 403x284 C64 frame, and the squeeze mapping. */
-#define CROP_X        40            /* VIC_G_FIRST_COL, skips the left border */
-#define CROP_Y        38            /* skips the top border                   */
-#define CROP_W        344           /* 320 text + 12 border each side         */
-#define CROP_H        244           /* 200 text + 22 top/bottom border        */
+/* Crop offsets inside the 403x284 C64 frame (frame coords -> LCD coords).
+   CROP_X is 43, not VIC_G_FIRST_COL (42), because draw_char emits its first
+   pixel at x+1; CROP_Y = 22 centres the text area (rows 42..241) on the LCD. */
+#define CROP_X        43
+#define CROP_Y        22
 
 static uint8_t keyboard_matrix[8];
 static bool quit_requested;
 
-/* Draw directly into the graphx current buffer (the back buffer once main()
-   has called gfx_SetDrawBuffer()). */
-#define draw_buf ((uint8_t *)gfx_vbuffer)
-
-/* Column remapping table for the 344 -> 320 horizontal squeeze. */
-static uint8_t src_column[CROP_W];
+/* Per-row framebuffer pointers (single-buffer mode draws straight into the
+   visible screen; the second VRAM half is the C64's RAM). Avoids a 24-bit
+   multiply per pixel. */
+static uint8_t *row_ptr[LCD_H];
 
 /* C64 palette (original emudore RGB values) converted to graphx 1555. */
 static const uint16_t c64_palette[16] = {
@@ -62,18 +60,17 @@ static const uint16_t c64_palette[16] = {
 void io_init(void)
 {
     int i;
-    int dropped;
+    uint8_t *row = gfx_vram;
     memset(keyboard_matrix, 0xff, sizeof(keyboard_matrix));
     quit_requested = false;
-    /* 344 -> 320 : take 15 of every 16 source columns, WITHOUT the '/' operator
-       (eZ80 integer division calls a 24-bit helper that clobbers IX/IY). */
-    dropped = 0;
-    for (i = 0; i < CROP_W; ++i)
+    for (i = 0; i < LCD_H; ++i)
     {
-        if (i == (dropped + 1) * 15)
-            ++dropped;
-        src_column[i] = (uint8_t)(i + dropped);
+        row_ptr[i] = row;
+        row += LCD_W;
     }
+    /* C64 entries 0/1 are black/white, same as the boot palette, so the boot
+       status text stays readable. */
+    gfx_SetPalette(c64_palette, sizeof(c64_palette), 0);
 }
 
 void io_shutdown(void)
@@ -169,6 +166,15 @@ static void apply_map(const KeyMap *map, int count)
 
 bool io_emulate(void)
 {
+    /* io_emulate runs after EVERY 6502 instruction, but kb_Scan is a slow
+       hardware scan: only rescan once per emulated video frame. */
+    static unsigned int scanned_frame = (unsigned int)-1;
+    unsigned int frame = vic_frames();
+
+    if (frame == scanned_frame)
+        return !quit_requested;
+    scanned_frame = frame;
+
     memset(keyboard_matrix, 0xff, sizeof(keyboard_matrix));
     kb_Scan();
 
@@ -198,36 +204,44 @@ bool io_quit_requested(void)
 
 void io_screen_update_pixel(int x, int y, uint8_t color)
 {
-    int cx = x - CROP_X;
-    int cy = y - CROP_Y;
-    int dx;
-    if ((unsigned)cx >= CROP_W || (unsigned)cy >= CROP_H || cy >= LCD_H)
+    unsigned int dx = (unsigned int)(x - CROP_X);
+    unsigned int dy = (unsigned int)(y - CROP_Y);
+    if (dx >= LCD_W || dy >= LCD_H)
         return;
-    dx = (int)src_column[cx];
-    if (dx < LCD_W)
-        draw_buf[cy * LCD_W + dx] = (uint8_t)(color & 0x0f);
+    row_ptr[dy][dx] = color & 0x0f;
 }
 
 void io_screen_draw_rect(int x, int y, int w, uint8_t color)
 {
-    int cy = y - CROP_Y;
-    int i;
-    if ((unsigned)cy >= CROP_H || cy >= LCD_H)
+    /* +1: glyphs emit at x+1 (see CROP_X), keep the bg fill aligned to them */
+    int dx = x - CROP_X + 1;
+    unsigned int dy = (unsigned int)(y - CROP_Y);
+    if (dy >= LCD_H)
         return;
-    for (i = 0; i < w; ++i)
-        io_screen_update_pixel(x + i, y, color);
+    if (dx < 0)
+    {
+        w += dx;
+        dx = 0;
+    }
+    if (dx + w > LCD_W)
+        w = LCD_W - dx;
+    if (w <= 0)
+        return;
+    memset(row_ptr[dy] + dx, color & 0x0f, (size_t)w);
 }
 
 void io_screen_draw_border(int y, uint8_t color)
 {
-    int cy = y - CROP_Y;
-    if ((unsigned)cy >= LCD_H)
+    unsigned int dy = (unsigned int)(y - CROP_Y);
+    (void)color;
+    if (dy >= LCD_H)
         return;
-    memset(&draw_buf[cy * LCD_W], color & 0x0f, LCD_W);
+    /* Black instead of the C64 border colour: the letterbox bands blend into
+       the calculator bezel so the text area reads as a centred screen. */
+    memset(row_ptr[dy], 0, LCD_W);
 }
 
 void io_screen_refresh(void)
 {
-    gfx_SetPalette(c64_palette, sizeof(c64_palette), 0);
-    gfx_BlitBuffer();
+    /* Single-buffered, palette loaded once in io_init: nothing to do. */
 }

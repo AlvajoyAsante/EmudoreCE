@@ -7,78 +7,40 @@
  */
 #include <string.h>
 #include <stdint.h>
-#include <fileioc.h>
-#include <ti/vars.h>
 #include "memory.h"
 #include "cia1.h"
 #include "cia2.h"
 #include "vic.h"
 #include "util.h"
 
-/* The C64 needs 64 KiB of RAM plus a 64 KiB shadow "ROM" image (a write to a
-   ROM-mapped address still lands in the hidden RAM underneath, which some
-   graphic modes rely on). That's 128 KiB, far more than the default BSS can
-   hold, and hardcoding an address collides with graphx. So we allocate it as
-   a runtime AppVar: the OS gives us a contiguous block in RAM and we just
-   read it via ti_GetDataPtr. No hardcoded addresses, no BSS/stack changes. */
-#define MEM_APPVAR_NAME "EM64MEM"
-#define MEM_TOTAL_SIZE  (2u * MEM_SIZE)  /* RAM then ROM, one block */
+/* The 64 KiB C64 RAM lives in the second half of VRAM (0xD52C00, 76800
+   bytes): graphx runs single-buffered so that half is unused, and it is the
+   only spare 64 KiB block on the CE (heap is ~60 KiB, AppVars max ~65.5 KiB).
+   The ROMs only need their real 20 KiB, kept as static arrays in BSS. */
+#define MEM_RAM_VRAM ((uint8_t *)0xD52C00)
 
-static uint8_t mem_handle;   /* open AppVar handle, 0 = not open */
-static uint8_t *mem_ram;     /* -> AppVar data + 0          */
-static uint8_t *mem_rom;     /* -> AppVar data + MEM_SIZE   */
+static uint8_t *mem_ram;
+static uint8_t rom_basic[0x2000];
+static uint8_t rom_kernal[0x2000];
+static uint8_t rom_chars[0x1000];
 static uint8_t banks[7];
 
 void mem_init(void)
 {
-    /* (Re)create the backing AppVar in RAM at exactly the size we need. */
-    mem_handle = ti_OpenVar(MEM_APPVAR_NAME, "w+", OS_TYPE_APPVAR);
-    if (!mem_handle)
-    {
-        dbg_printf("[mem] ti_OpenVar(%s) failed\n", MEM_APPVAR_NAME);
-        return;
-    }
-    if (ti_Resize(MEM_TOTAL_SIZE, mem_handle) != (int)MEM_TOTAL_SIZE)
-    {
-        dbg_printf("[mem] ti_Resize(%u) failed\n", (unsigned)MEM_TOTAL_SIZE);
-        ti_Close(mem_handle);
-        mem_handle = 0;
-        return;
-    }
-    mem_ram = (uint8_t *)ti_GetDataPtr(mem_handle);
-    if (!mem_ram)
-    {
-        dbg_printf("[mem] ti_GetDataPtr NULL\n");
-        ti_Close(mem_handle);
-        mem_handle = 0;
-        return;
-    }
-    mem_rom = mem_ram + MEM_SIZE;
-    dbg_printf("[mem] ram=%p rom=%p\n", (void *)mem_ram, (void *)mem_rom);
-
+    mem_ram = MEM_RAM_VRAM;
     memset(mem_ram, 0, MEM_SIZE);
-    memset(mem_rom, 0, MEM_SIZE);
     mem_setup_banks(LORAM | HIRAM | CHAREN);
     mem_write_byte_no_io(ADDR_DATA_DIR, 0x2f);
-    dbg_printf("[mem] banks set up\n");
 }
 
-/* True once the backing AppVar was created and mapped. */
 int mem_ready(void)
 {
-    return mem_handle != 0 && mem_ram != NULL;
+    return mem_ram != NULL;
 }
 
 void mem_shutdown(void)
 {
-    if (mem_handle)
-    {
-        ti_Close(mem_handle);
-        mem_handle = 0;
-    }
-    /* Remove the backing AppVar so we don't leave a 128 KiB file behind. */
-    ti_DeleteVar(MEM_APPVAR_NAME, OS_TYPE_APPVAR);
-    mem_ram = mem_rom = NULL;
+    mem_ram = NULL;
 }
 
 void mem_setup_banks(uint8_t v)
@@ -158,7 +120,7 @@ uint8_t mem_read_byte(uint16_t addr)
         if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
             retval = vic_read_register(addr & 0x7f);
         else if (banks[MEM_BANK_CHAREN] == MEM_BANK_ROM)
-            retval = mem_rom[addr];
+            retval = rom_chars[addr - ADDR_CHARS];
         else
             retval = mem_ram[addr];
     }
@@ -178,13 +140,15 @@ uint8_t mem_read_byte(uint16_t addr)
     }
     else if (page >= ADDR_BASIC_FIRST && page <= ADDR_BASIC_LAST)
     {
-        retval = (banks[MEM_BANK_BASIC] == MEM_BANK_ROM) ? mem_rom[addr]
-                                                         : mem_ram[addr];
+        retval = (banks[MEM_BANK_BASIC] == MEM_BANK_ROM)
+                     ? rom_basic[addr - ADDR_BASIC]
+                     : mem_ram[addr];
     }
-    else if (page >= ADDR_KERNAL_FIRST && page <= ADDR_KERNAL_LAST)
+    else if (page >= ADDR_KERNAL_FIRST)
     {
-        retval = (banks[MEM_BANK_KERNAL] == MEM_BANK_ROM) ? mem_rom[addr]
-                                                          : mem_ram[addr];
+        retval = (banks[MEM_BANK_KERNAL] == MEM_BANK_ROM)
+                     ? rom_kernal[addr - ADDR_KERNAL]
+                     : mem_ram[addr];
     }
     else
     {
@@ -198,14 +162,19 @@ uint8_t mem_read_byte_no_io(uint16_t addr)
     return mem_ram[addr];
 }
 
-uint8_t mem_read_byte_rom(uint16_t addr)
+uint8_t *mem_basic_rom_ptr(void)
 {
-    return mem_rom[addr];
+    return rom_basic;
 }
 
-uint8_t *mem_rom_ptr(void)
+uint8_t *mem_kernal_rom_ptr(void)
 {
-    return mem_rom;
+    return rom_kernal;
+}
+
+uint8_t *mem_chars_rom_ptr(void)
+{
+    return rom_chars;
 }
 
 uint8_t *mem_ram_ptr(void)
@@ -245,6 +214,6 @@ uint8_t mem_vic_read_byte(uint16_t addr)
     uint16_t vic_addr = cia2_vic_base_address() + (addr & 0x3fff);
     if ((vic_addr >= 0x1000 && vic_addr < 0x2000) ||
         (vic_addr >= 0x9000 && vic_addr < 0xa000))
-        return mem_rom[ADDR_CHARS + (vic_addr & 0xfff)];
+        return rom_chars[vic_addr & 0xfff];
     return mem_read_byte_no_io(vic_addr);
 }

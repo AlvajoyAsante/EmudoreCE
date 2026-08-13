@@ -1,9 +1,13 @@
 /*
  * emudore-CE: machine glue (C port of c64.cpp).
  *
- * The constructor/destructor become c64_init()/c64_shutdown(). The desktop
- * file-loading (Loader) and the r2 Debugger are removed; ROMs are loaded from
- * AppVars here instead.
+ * c64_init()/c64_shutdown() wire up the chips; ROMs load from AppVars.
+ *
+ * IMPORTANT: this file must NOT use dbg_printf()/sprintf anywhere near
+ * c64_init's return path. On the eZ80, sprintf loads the debug-port constant
+ * into IX, and c64_init returns its bool in A via IX (ld a,ixl / pop ix / ret)
+ * -- so a sprintf between the work and the return clobbers IX and returns to a
+ * garbage address. All debug output here is kept out of the return path.
  */
 #include <stdlib.h>
 #include "c64.h"
@@ -16,79 +20,83 @@
 #include "util.h"
 #include "CEPackage.h"
 
+/* Load the three C64 ROMs into the ROM image. Returns false on failure.
+   No dbg_printf here: this feeds c64_init's return value. */
 static bool load_roms(void)
 {
-    dbg_printf("[c64] rom buffer base=%p\n", (void *)mem_rom_ptr());
     /* BASIC 8 KiB -> $A000, KERNAL 8 KiB -> $E000, CharGen 4 KiB -> $D000 */
-    dbg_printf("[c64] loading BASIC\n");
-    if (!CEPackageRead(CE_PACKAGE_BASIC, mem_rom_ptr() + ADDR_BASIC, 0x2000))
+    if (!CEPackageRead(CE_PACKAGE_BASIC, mem_basic_rom_ptr(), 0x2000))
         return false;
-    dbg_printf("[c64] loading KERNAL\n");
-    if (!CEPackageRead(CE_PACKAGE_KERNAL, mem_rom_ptr() + ADDR_KERNAL, 0x2000))
+    if (!CEPackageRead(CE_PACKAGE_KERNAL, mem_kernal_rom_ptr(), 0x2000))
         return false;
-    dbg_printf("[c64] loading CHARS\n");
-    if (!CEPackageRead(CE_PACKAGE_CHARS, mem_rom_ptr() + ADDR_CHARS, 0x1000))
+    if (!CEPackageRead(CE_PACKAGE_CHARS, mem_chars_rom_ptr(), 0x1000))
         return false;
-    dbg_printf("[c64] ROMs loaded ok\n");
     return true;
 }
 
-bool c64_init(void)
+static bool c64_ok;
+
+bool c64_ready(void)
 {
+    return c64_ok;
+}
+
+bool c64_boot_memory(void)
+{
+    c64_ok = false;
     io_init();
     mem_init();
-    if (!mem_ready())
-    {
-        dbg_printf("[c64] memory backing store failed\n");
-        return false;
-    }
-    if (!load_roms())
-    {
-        dbg_printf("[c64] load_roms failed\n");
-        return false;
-    }
+    return mem_ready();
+}
+
+bool c64_boot_roms(void)
+{
+    return load_roms();
+}
+
+void c64_mark_ready(void)
+{
+    c64_ok = true;
+}
+
+/* Returns void and stores the result in a static (c64_ok) instead of
+   returning it through IX. The ez80 compiler was holding c64_init's bool
+   return value in the IX register, but the CEPackageRead argument setup also
+   loads constants/pointers into IX, clobbering the return value and the saved
+   frame -> crash on `pop ix; ret`. A static result avoids that path. */
+void c64_init(void)
+{
+    if (!c64_boot_memory())
+        return;
+    if (!c64_boot_roms())
+        return;
     cia1_reset();
     cia2_reset();
     vic_reset();
     cpu_reset();
-    dbg_printf("[c64] init ok, pc=%04x\n", cpu.pc);
-    return true;
+    c64_mark_ready();
 }
 
 void c64_run(void)
 {
-    bool running = true;
-    unsigned long iter = 0;
-    dbg_printf("[c64] run loop start, pc=%04x\n", cpu.pc);
-    while (running)
+    /* cpu+vic must interleave every instruction (raster timing); CIA timers
+       and keypad IO tolerate 8-instruction granularity and are the loop's
+       fixed overhead, so they only run on every 8th iteration. */
+    unsigned int tick = 0;
+    for (;;)
     {
-        if (!cia1_emulate())
-        {
-            dbg_printf("[c64] cia1_emulate false\n");
-            break;
-        }
-        if (!cia2_emulate())
-        {
-            dbg_printf("[c64] cia2_emulate false\n");
-            break;
-        }
         if (!cpu_emulate())
-        {
-            dbg_printf("[c64] cpu_emulate false (bad opcode) pc=%04x\n", cpu.pc);
             break;
-        }
         if (!vic_emulate())
-        {
-            dbg_printf("[c64] vic_emulate false\n");
             break;
+        if ((++tick & 7) == 0)
+        {
+            cia1_emulate();
+            cia2_emulate();
+            if (!io_emulate())
+                break;   /* CLEAR pressed */
         }
-        if (!io_emulate())
-            break; /* returns false when CLEAR is pressed */
-        ++iter;
-        if (iter == 1 || (iter % 100000) == 0)
-            dbg_printf("[c64] iter=%lu pc=%04x cycles=%u\n", iter, cpu.pc, cpu.cycles);
     }
-    dbg_printf("[c64] loop exited after %lu iters\n", iter);
 }
 
 void c64_shutdown(void)

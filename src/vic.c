@@ -2,8 +2,8 @@
  * emudore-CE: MOS VIC-II video chip (C port of vic.cpp).
  *
  * Drawing calls go to io.c (graphx framebuffer) instead of an SDL texture.
- * The D() debug print on an unsupported graphic mode is kept (goes to the
- * emulator console in debug builds).
+ * Stop reasons (illegal opcode / unsupported mode) are stored in globals and
+ * reported by main() after the loop; no debug printing in the hot path.
  */
 #include "vic.h"
 #include "cpu.h"
@@ -45,6 +45,13 @@ static uint8_t mem_pointers;
 /* current graphic mode */
 static uint8_t graphic_mode;
 
+/* Render only every 4th frame: raster/IRQ timing still runs every line, but
+   the pixel drawing (the bulk of the per-line cost) is skipped. */
+static bool render_frame;
+
+/* set when vic_emulate stops on an unsupported mode; reported by main() */
+uint8_t vic_bad_mode;
+
 void vic_reset(void)
 {
     int i;
@@ -60,6 +67,7 @@ void vic_reset(void)
     bgcolor[0] = bgcolor[1] = bgcolor[2] = bgcolor[3] = 0;
     cr1 = cr2 = 0;
     frame_count = 0;
+    render_frame = true;
     screen_mem = ADDR_SCREEN;
     char_mem = ADDR_CHARS;
     bitmap_mem = ADDR_BITMAP;
@@ -406,7 +414,8 @@ bool vic_emulate(void)
             cpu_irq();
         }
 
-        if (rstr >= VIC_FIRST_VISIBLE_LINE && rstr < VIC_LAST_VISIBLE_LINE)
+        if (render_frame &&
+            rstr >= VIC_FIRST_VISIBLE_LINE && rstr < VIC_LAST_VISIBLE_LINE)
         {
             int screen_y = rstr - VIC_FIRST_VISIBLE_LINE;
             io_screen_draw_border(screen_y, border_color);
@@ -422,7 +431,7 @@ bool vic_emulate(void)
                 draw_raster_bitmap_mode();
                 break;
             default:
-                D("unsupported graphic mode: %d\n", graphic_mode);
+                vic_bad_mode = graphic_mode;
                 return false;
             }
             draw_raster_sprites();
@@ -435,6 +444,11 @@ bool vic_emulate(void)
         {
             io_screen_refresh();
             frame_count++;
+            /* KERNAL boot (~300 frames) only needs occasional refreshes. */
+            if (frame_count < 300)
+                render_frame = ((frame_count & 7) == 0);
+            else
+                render_frame = ((frame_count & 1) == 0);
             set_raster_counter(0);
         }
     }

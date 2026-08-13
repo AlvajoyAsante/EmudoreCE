@@ -24,6 +24,10 @@ typedef struct
 
 extern CpuState cpu;
 
+/* diagnostics: last illegal opcode that stopped cpu_emulate (0 = none) */
+extern uint8_t  cpu_illegal_op;
+extern uint16_t cpu_illegal_pc;
+
 void cpu_reset(void);
 /* Execute one instruction. Returns false on an illegal opcode. */
 bool cpu_emulate(void);

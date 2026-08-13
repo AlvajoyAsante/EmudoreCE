@@ -60,16 +60,17 @@ void mem_init(void);
 void mem_shutdown(void);
 void mem_setup_banks(uint8_t v);
 
-/* non-zero once the backing AppVar for RAM/ROM was created and mapped */
+/* non-zero once RAM/ROM backing buffers were allocated */
 int mem_ready(void);
 
-/* direct access to the RAM/ROM images, used by the AppVar ROM loader */
-uint8_t *mem_rom_ptr(void);
+/* direct access to the ROM/RAM images, used by the ROM loader */
+uint8_t *mem_basic_rom_ptr(void);
+uint8_t *mem_kernal_rom_ptr(void);
+uint8_t *mem_chars_rom_ptr(void);
 uint8_t *mem_ram_ptr(void);
 
 uint8_t  mem_read_byte(uint16_t addr);
 uint8_t  mem_read_byte_no_io(uint16_t addr);
-uint8_t  mem_read_byte_rom(uint16_t addr);
 void     mem_write_byte(uint16_t addr, uint8_t v);
 void     mem_write_byte_no_io(uint16_t addr, uint8_t v);
 uint16_t mem_read_word(uint16_t addr);

@@ -16,6 +16,11 @@
 
 CpuState cpu;
 
+/* Set when cpu_emulate stops on an illegal opcode; main() reports it after
+   the run loop (dbg_printf inside the hot path clobbers the IX frame). */
+uint8_t  cpu_illegal_op;
+uint16_t cpu_illegal_pc;
+
 /* register/flag accessors as macros (read) and assignment helpers (write) */
 #define A()  (cpu.a)
 #define X()  (cpu.x)
@@ -556,7 +561,8 @@ bool cpu_emulate(void)
     case 0xFD: sbc(load_byte(addr_absx()), 4); break;
     case 0xFE: inc(addr_absx(), 7); break;
     default:
-        D("Unknown instruction: %X at %04x\n", insn, cpu.pc);
+        cpu_illegal_op = insn;
+        cpu_illegal_pc = cpu.pc;
         retval = false;
     }
     return retval;
