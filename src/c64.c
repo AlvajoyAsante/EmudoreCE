@@ -10,6 +10,7 @@
  * garbage address. All debug output here is kept out of the return path.
  */
 #include <stdlib.h>
+#include <string.h>
 #include "c64.h"
 #include "cpu.h"
 #include "memory.h"
@@ -19,6 +20,27 @@
 #include "io.h"
 #include "util.h"
 #include "CEPackage.h"
+
+/* The KERNAL RAM test ($FD6C-$FD87) walks all 40 KiB byte-by-byte (~1.3M
+   emulated cycles of boot time). Replace it with "top of RAM = $A000" using
+   the ROM's own SETTOP call. Bytes are verified first so a different KERNAL
+   image is left untouched. */
+static void patch_kernal_ram_test(void)
+{
+    static const uint8_t patch[] = {
+        0xA2, 0x00,       /* LDX #$00       */
+        0xA0, 0xA0,       /* LDY #$A0       */
+        0x18,             /* CLC            */
+        0x20, 0x2D, 0xFE, /* JSR $FE2D  set MEMSIZ = $A000 */
+        0x4C, 0x90, 0xFD  /* JMP $FD90  continue past the test */
+    };
+    uint8_t *k = mem_kernal_rom_ptr();
+    if (k[0x1d6c] == 0xE6 && k[0x1d6d] == 0xC2 &&  /* INC $C2      */
+        k[0x1d6e] == 0xB1 && k[0x1d6f] == 0xC1 &&  /* LDA ($C1),Y  */
+        k[0x1d8d] == 0x20 && k[0x1d8e] == 0x2D &&  /* JSR $FE2D    */
+        k[0x1d8f] == 0xFE)
+        memcpy(&k[0x1d6c], patch, sizeof(patch));
+}
 
 /* Load the three C64 ROMs into the ROM image. Returns false on failure.
    No dbg_printf here: this feeds c64_init's return value. */
@@ -31,6 +53,7 @@ static bool load_roms(void)
         return false;
     if (!CEPackageRead(CE_PACKAGE_CHARS, mem_chars_rom_ptr(), 0x1000))
         return false;
+    patch_kernal_ram_test();
     return true;
 }
 
@@ -79,23 +102,22 @@ void c64_init(void)
 
 void c64_run(void)
 {
-    /* cpu+vic must interleave every instruction (raster timing); CIA timers
-       and keypad IO tolerate 8-instruction granularity and are the loop's
-       fixed overhead, so they only run on every 8th iteration. */
-    unsigned int tick = 0;
+    /* The CPU runs in a tight batch until the next raster line is due (the
+       per-instruction vic/cia/io calls were pure overhead). Comparisons are
+       wrap-safe: cpu.cycles is a 24-bit int on the eZ80 and wraps every ~17
+       emulated seconds. */
+    unsigned int line = 0;
     for (;;)
     {
-        if (!cpu_emulate())
-            break;
+        while ((int)(cpu.cycles - vic_raster_due) < 0)
+            if (!cpu_emulate())
+                return;
         if (!vic_emulate())
-            break;
-        if ((++tick & 7) == 0)
-        {
-            cia1_emulate();
-            cia2_emulate();
-            if (!io_emulate())
-                break;   /* CLEAR pressed */
-        }
+            return;
+        cia1_emulate();
+        cia2_emulate();
+        if ((++line & 7) == 0 && !io_emulate())
+            return;   /* CLEAR pressed */
     }
 }
 

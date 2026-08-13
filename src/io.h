@@ -27,6 +27,9 @@ bool io_emulate(void);
 void io_screen_update_pixel(int x, int y, uint8_t color);
 void io_screen_draw_rect(int x, int y, int w, uint8_t color);
 void io_screen_draw_border(int y, uint8_t color);
+/* Direct framebuffer pointer for a C64 frame row (NULL if off-screen);
+   dst[0] is the first text-area pixel. Used by the fast char renderer. */
+uint8_t *io_text_row(int y);
 /* Copy the finished frame to the LCD. */
 void io_screen_refresh(void);
 

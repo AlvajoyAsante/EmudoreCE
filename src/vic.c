@@ -5,8 +5,10 @@
  * Stop reasons (illegal opcode / unsupported mode) are stored in globals and
  * reported by main() after the loop; no debug printing in the hot path.
  */
+#include <string.h>
 #include "vic.h"
 #include "cpu.h"
+#include "cia2.h"
 #include "memory.h"
 #include "io.h"
 #include "util.h"
@@ -32,7 +34,7 @@ static uint8_t sprite_colors[8];
 static uint8_t border_color;
 static uint8_t bgcolor[4];
 /* cpu sync */
-static unsigned int next_raster_at;
+unsigned int vic_raster_due;
 static unsigned int frame_count;
 /* control registers */
 static uint8_t cr1, cr2;
@@ -57,7 +59,7 @@ void vic_reset(void)
     int i;
     raster_irq = raster_c = 0;
     irq_enabled = irq_status = 0;
-    next_raster_at = VIC_LINE_CYCLES;
+    vic_raster_due = VIC_LINE_CYCLES;
     for (i = 0; i < 8; ++i)
         mx[i] = my[i] = sprite_colors[i] = 0;
     msbx = sprite_double_height = sprite_double_width = 0;
@@ -138,11 +140,6 @@ static uint8_t get_char_color(int column, int row)
     return mem_read_byte_no_io(ADDR_COLOR_RAM + (row * VIC_G_COLS) + column) & 0x0f;
 }
 
-static uint8_t get_char_data(int chr, int line)
-{
-    return mem_vic_read_byte(char_mem + (chr * 8) + line);
-}
-
 static uint8_t get_bitmap_data(int column, int row, int line)
 {
     return mem_vic_read_byte(bitmap_mem + (row * VIC_G_COLS + column) * 8 + line);
@@ -155,37 +152,72 @@ static uint16_t get_sprite_ptr(int n)
 
 /* ---- drawing ----------------------------------------------------------- */
 
-static void draw_char(int x, int y, uint8_t data, uint8_t color)
+static void draw_raster_char_mode(void)
 {
-    int i;
-    for (i = 0; i < 8; ++i)
-    {
-        int xoffs = x + 8 - i + horizontal_scroll();
-        if (xoffs > VIC_G_FIRST_COL + VIC_G_RES_X)
-            continue;
-        if (ISSET_BIT(data, i))
-            io_screen_update_pixel(xoffs, y, color);
-    }
-}
+    int rstr = get_raster_counter();
+    int y = rstr - VIC_FIRST_VISIBLE_LINE;
+    int line = rstr - VIC_G_FIRST_LINE;
+    int row = line >> 3;
+    int char_row = line & 7;
+    int xs = horizontal_scroll();
+    int c, c0 = 0, c1 = VIC_G_COLS;
+    unsigned int addr;
+    const uint8_t *ram = mem_ram_ptr();
+    const uint8_t *scr, *colram, *chardata;
+    uint8_t *dst0 = io_text_row(y);
+    uint8_t bg = bgcolor[0];
 
-static void draw_mcchar(int x, int y, uint8_t data, uint8_t color)
-{
-    int i;
-    for (i = 0; i < 4; ++i)
+    if (!dst0)
+        return;
+
+    /* All source pointers are resolved ONCE per line: screen row and colour
+       RAM are contiguous 40-byte runs, and the 2 KiB char generator block is
+       either entirely inside or outside the char-ROM window. */
+    addr = (uint16_t)(cia2_vic_base_address() + screen_mem + row * VIC_G_COLS);
+    scr = ram + addr;
+    colram = ram + ADDR_COLOR_RAM + row * VIC_G_COLS;
+    addr = (uint16_t)(cia2_vic_base_address() + char_mem);
+    if ((addr >= 0x1000 && addr < 0x2000) || (addr >= 0x9000 && addr < 0xa000))
+        chardata = mem_chars_rom_ptr() + (addr & 0x0fff);
+    else
+        chardata = ram + addr;
+
+    memset(dst0, bg, 320);
+
+    if (!ISSET_BIT(cr2, 3))
     {
-        uint8_t c;
-        uint8_t cs = (data >> (i * 2)) & 0x3;
-        switch (cs)
+        c0 = 1;
+        c1 = VIC_G_COLS - 1;
+    }
+
+    for (c = c0; c < c1; ++c)
+    {
+        uint8_t data = chardata[(scr[c] << 3) + char_row];
+        uint8_t color = colram[c] & 0x0f;
+        uint8_t *d = dst0 + (c << 3) + xs;
+
+        if (c == VIC_G_COLS - 1 && xs)
+            break; /* scrolled last column would overrun the row */
+
+        if (graphic_mode == GM_MC_CHAR && (color & 0x08))
         {
-        case 0: c = bgcolor[0]; break;
-        case 1: c = bgcolor[1]; break;
-        case 2: c = bgcolor[2]; break;
-        default: c = color; break;
+            uint8_t mc3 = color & 0x07;
+            uint8_t px;
+            px = (data >> 6) & 3; d[0] = d[1] = (px == 3) ? mc3 : bgcolor[px];
+            px = (data >> 4) & 3; d[2] = d[3] = (px == 3) ? mc3 : bgcolor[px];
+            px = (data >> 2) & 3; d[4] = d[5] = (px == 3) ? mc3 : bgcolor[px];
+            px = data & 3;        d[6] = d[7] = (px == 3) ? mc3 : bgcolor[px];
         }
+        else
         {
-            int xoffs = x + 8 - i * 2 + horizontal_scroll();
-            io_screen_update_pixel(xoffs, y, c);
-            io_screen_update_pixel(xoffs + 1, y, c);
+            if (data & 0x80) d[0] = color;
+            if (data & 0x40) d[1] = color;
+            if (data & 0x20) d[2] = color;
+            if (data & 0x10) d[3] = color;
+            if (data & 0x08) d[4] = color;
+            if (data & 0x04) d[5] = color;
+            if (data & 0x02) d[6] = color;
+            if (data & 0x01) d[7] = color;
         }
     }
 }
@@ -225,41 +257,6 @@ static void draw_mcbitmap(int x, int y, uint8_t data, uint8_t scolor, uint8_t rc
             int xoffs = x + 8 - i * 2 + horizontal_scroll();
             io_screen_update_pixel(xoffs, y, c);
             io_screen_update_pixel(xoffs + 1, y, c);
-        }
-    }
-}
-
-static void draw_raster_char_mode(void)
-{
-    int rstr = get_raster_counter();
-    int y = rstr - VIC_FIRST_VISIBLE_LINE;
-    int column;
-
-    if (rstr >= VIC_G_FIRST_LINE && rstr < VIC_G_LAST_LINE && !is_screen_off())
-    {
-        io_screen_draw_rect(VIC_G_FIRST_COL, y, VIC_G_RES_X, bgcolor[0]);
-        for (column = 0; column < VIC_G_COLS; ++column)
-        {
-            int x, line, row, char_row;
-            uint8_t c, data, color;
-
-            if (!ISSET_BIT(cr2, 3))
-            {
-                if (column == 0 || column == VIC_G_COLS - 1)
-                    continue;
-            }
-            x = VIC_G_FIRST_COL + column * 8;
-            line = rstr - VIC_G_FIRST_LINE;
-            row = line / 8;
-            char_row = line % 8;
-            c = get_screen_char(column, row);
-            data = get_char_data(c, char_row);
-            color = get_char_color(column, row);
-
-            if (graphic_mode == GM_MC_CHAR && ISSET_BIT(color, 3))
-                draw_mcchar(x, y, data, (color & 0x7));
-            else
-                draw_char(x, y, data, color);
         }
     }
 }
@@ -404,7 +401,8 @@ bool vic_emulate(void)
     if ((vic_read_register(0x19) & 0x80) != 0)
         cpu_irq();
 
-    if (cpu.cycles >= next_raster_at)
+    /* wrap-safe: 24-bit cycle counter overflows every ~17 emulated seconds */
+    if ((int)(cpu.cycles - vic_raster_due) >= 0)
     {
         int rstr = get_raster_counter();
 
@@ -418,26 +416,34 @@ bool vic_emulate(void)
             rstr >= VIC_FIRST_VISIBLE_LINE && rstr < VIC_LAST_VISIBLE_LINE)
         {
             int screen_y = rstr - VIC_FIRST_VISIBLE_LINE;
-            io_screen_draw_border(screen_y, border_color);
+            bool text_row = (rstr >= VIC_G_FIRST_LINE &&
+                             rstr < VIC_G_LAST_LINE && !is_screen_off());
 
-            switch (graphic_mode)
+            /* Text rows repaint the full 320px themselves; only border rows
+               need the explicit fill. */
+            if (!text_row)
+                io_screen_draw_border(screen_y, border_color);
+            else
             {
-            case GM_CHAR:
-            case GM_MC_CHAR:
-                draw_raster_char_mode();
-                break;
-            case GM_BITMAP:
-            case GM_MC_BITMAP:
-                draw_raster_bitmap_mode();
-                break;
-            default:
-                vic_bad_mode = graphic_mode;
-                return false;
+                switch (graphic_mode)
+                {
+                case GM_CHAR:
+                case GM_MC_CHAR:
+                    draw_raster_char_mode();
+                    break;
+                case GM_BITMAP:
+                case GM_MC_BITMAP:
+                    draw_raster_bitmap_mode();
+                    break;
+                default:
+                    vic_bad_mode = graphic_mode;
+                    return false;
+                }
             }
             draw_raster_sprites();
         }
 
-        next_raster_at += is_bad_line() ? VIC_BAD_LINE_CYCLES : VIC_LINE_CYCLES;
+        vic_raster_due += is_bad_line() ? VIC_BAD_LINE_CYCLES : VIC_LINE_CYCLES;
 
         set_raster_counter(++rstr);
         if (rstr >= VIC_SCREEN_LINES)

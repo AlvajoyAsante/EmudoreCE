@@ -241,6 +241,12 @@ void io_screen_draw_border(int y, uint8_t color)
     memset(row_ptr[dy], 0, LCD_W);
 }
 
+uint8_t *io_text_row(int y)
+{
+    unsigned int dy = (unsigned int)(y - CROP_Y);
+    return (dy < LCD_H) ? row_ptr[dy] : NULL;
+}
+
 void io_screen_refresh(void)
 {
     /* Single-buffered, palette loaded once in io_init: nothing to do. */

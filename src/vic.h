@@ -19,6 +19,10 @@ unsigned int vic_frames(void);
 /* diagnostics: unsupported graphic mode that stopped vic_emulate */
 extern uint8_t vic_bad_mode;
 
+/* cpu.cycles value at which the next raster line is processed; read by
+   c64_run's CPU batching loop */
+extern unsigned int vic_raster_due;
+
 /* timing / geometry */
 #define VIC_SCREEN_LINES        312
 #define VIC_SCREEN_COLS         504
