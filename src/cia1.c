@@ -3,6 +3,7 @@
  *
  * The keyboard matrix is read from the CE keypad via io.c instead of SDL.
  */
+#include <sys/timers.h>
 #include "cia1.h"
 #include "cpu.h"
 #include "io.h"
@@ -18,7 +19,7 @@ static bool timer_a_irq_enabled, timer_b_irq_enabled;
 static bool timer_a_irq_triggered, timer_b_irq_triggered;
 static uint8_t timer_a_run_mode, timer_b_run_mode;
 static uint8_t timer_a_input_mode, timer_b_input_mode;
-static unsigned int prev_cpu_cycles;
+static unsigned int prev_rtc_ticks;
 static uint8_t pra;
 
 void cia1_reset(void)
@@ -30,7 +31,14 @@ void cia1_reset(void)
     timer_a_input_mode = timer_b_input_mode = CIA_MODE_PROCESSOR;
     timer_a_run_mode = timer_b_run_mode = CIA_RUN_RESTART;
     pra = 0xff;
-    prev_cpu_cycles = 0;
+    prev_rtc_ticks = 0;
+    /* CIA1 timers pace against REAL time (32 kHz crystal timer): the jiffy
+       IRQ, cursor blink and key repeat then run at wall-clock speed no
+       matter how fast the CPU core emulates. */
+    timer_Disable(1);
+    timer_Set(1, 0);
+    timer_SetReload(1, 0);
+    timer_Enable(1, TIMER_32K, TIMER_NOINT, TIMER_UP);
 }
 
 static void reset_timer_a(void)
@@ -118,9 +126,14 @@ uint8_t cia1_read_register(uint8_t r)
 
 bool cia1_emulate(void)
 {
+    /* Elapsed REAL time -> C64 cycles (32768 Hz tick ~= 30 C64 cycles). */
+    unsigned int now = (unsigned int)timer_Get(1);
+    unsigned int elapsed = (now - prev_rtc_ticks) * 30;
+    prev_rtc_ticks = now;
+
     if (timer_a_enabled && timer_a_input_mode == CIA_MODE_PROCESSOR)
     {
-        timer_a_counter -= cpu.cycles - prev_cpu_cycles;
+        timer_a_counter -= elapsed;
         if (timer_a_counter <= 0)
         {
             if (timer_a_irq_enabled)
@@ -133,7 +146,7 @@ bool cia1_emulate(void)
     }
     if (timer_b_enabled && timer_b_input_mode == CIA_MODE_PROCESSOR)
     {
-        timer_b_counter -= cpu.cycles - prev_cpu_cycles;
+        timer_b_counter -= elapsed;
         if (timer_b_counter <= 0)
         {
             if (timer_b_irq_enabled)
@@ -144,6 +157,5 @@ bool cia1_emulate(void)
             reset_timer_b();
         }
     }
-    prev_cpu_cycles = cpu.cycles;
     return true;
 }

@@ -223,6 +223,17 @@ bool io_emulate(void)
             apply_map(digit_map, MAP_COUNT(digit_map));
     }
 
+    /* Key state changed -> render the next frame so typing feels instant
+       even with aggressive frame skipping. */
+    {
+        static uint8_t prev_matrix[8];
+        if (memcmp(prev_matrix, keyboard_matrix, sizeof(prev_matrix)))
+        {
+            memcpy(prev_matrix, keyboard_matrix, sizeof(prev_matrix));
+            vic_request_render();
+        }
+    }
+
     return !quit_requested;
 }
 

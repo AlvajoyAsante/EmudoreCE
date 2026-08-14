@@ -47,9 +47,15 @@ static uint8_t mem_pointers;
 /* current graphic mode */
 static uint8_t graphic_mode;
 
-/* Render only every 4th frame: raster/IRQ timing still runs every line, but
+/* Render only some frames: raster/IRQ timing still runs every line, but
    the pixel drawing (the bulk of the per-line cost) is skipped. */
 static bool render_frame;
+static bool render_requested; /* set by io on key change: render next frame */
+
+void vic_request_render(void)
+{
+    render_requested = true;
+}
 
 /* set when vic_emulate stops on an unsupported mode; reported by main() */
 uint8_t vic_bad_mode;
@@ -162,7 +168,6 @@ static void draw_raster_char_mode(void)
     int xs = horizontal_scroll();
     int c, c0 = 0, c1 = VIC_G_COLS;
     unsigned int addr;
-    const uint8_t *ram = mem_ram_ptr();
     const uint8_t *scr, *colram, *chardata;
     uint8_t *dst0 = io_text_row(y);
     uint8_t bg = bgcolor[0];
@@ -174,13 +179,13 @@ static void draw_raster_char_mode(void)
        RAM are contiguous 40-byte runs, and the 2 KiB char generator block is
        either entirely inside or outside the char-ROM window. */
     addr = (uint16_t)(cia2_vic_base_address() + screen_mem + row * VIC_G_COLS);
-    scr = ram + addr;
-    colram = ram + ADDR_COLOR_RAM + row * VIC_G_COLS;
+    scr = mem_host_ptr((uint16_t)addr);
+    colram = mem_host_ptr((uint16_t)(ADDR_COLOR_RAM + row * VIC_G_COLS));
     addr = (uint16_t)(cia2_vic_base_address() + char_mem);
     if ((addr >= 0x1000 && addr < 0x2000) || (addr >= 0x9000 && addr < 0xa000))
         chardata = mem_chars_rom_ptr() + (addr & 0x0fff);
     else
-        chardata = ram + addr;
+        chardata = mem_host_ptr((uint16_t)addr);
 
     memset(dst0, bg, 320);
 
@@ -455,7 +460,9 @@ bool vic_emulate(void)
             if (frame_count < 300)
                 render_frame = ((frame_count & 15) == 0);
             else
-                render_frame = ((frame_count & 7) == 0);
+                render_frame = render_requested ||
+                               ((frame_count & 1) == 0);
+            render_requested = false;
             set_raster_counter(0);
         }
     }

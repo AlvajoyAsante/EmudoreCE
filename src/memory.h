@@ -89,10 +89,22 @@ typedef union
 } U16B;
 
 extern uint8_t *mem_ram;
+extern uint8_t *mem_low; /* fast BSS copy of C64 $0000-$0FFF (see memory.c) */
 extern MemPage mem_rd_pg[256];
 extern MemPage mem_wr_pg[256];
 uint8_t mem_read_io(uint16_t addr);
 void    mem_write_io(uint16_t addr, uint8_t v);
+
+/* C64 pages $00-$0F (ZP, stack, OS workspace, default screen) live in BSS
+   RAM instead of VRAM: they are the hottest data and VRAM pays LCD-DMA
+   contention wait states on every access. */
+#define MEM_LOW_SIZE 0x1000
+
+__attribute__((__always_inline__))
+static inline uint8_t *mem_host_ptr(uint16_t addr)
+{
+    return (addr < MEM_LOW_SIZE ? mem_low : mem_ram) + addr;
+}
 
 /* Inlined hot paths: every 6502 instruction does 2-4 of these. always_inline
    because -Oz otherwise outlines them into local functions (call overhead). */
@@ -125,12 +137,12 @@ static inline void mem_write_byte(uint16_t addr, uint8_t v)
 
 static inline uint8_t mem_read_byte_no_io(uint16_t addr)
 {
-    return mem_ram[addr];
+    return *mem_host_ptr(addr);
 }
 
 static inline void mem_write_byte_no_io(uint16_t addr, uint8_t v)
 {
-    mem_ram[addr] = v;
+    *mem_host_ptr(addr) = v;
 }
 
 __attribute__((__always_inline__))
@@ -145,8 +157,8 @@ static inline uint16_t mem_read_word(uint16_t addr)
 static inline uint16_t mem_read_word_no_io(uint16_t addr)
 {
     U16B r;
-    r.b.lo = mem_ram[addr];
-    r.b.hi = mem_ram[(uint16_t)(addr + 1)];
+    r.b.lo = mem_read_byte_no_io(addr);
+    r.b.hi = mem_read_byte_no_io((uint16_t)(addr + 1));
     return r.w;
 }
 

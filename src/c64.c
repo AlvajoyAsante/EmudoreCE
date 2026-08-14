@@ -103,7 +103,8 @@ void c64_init(void)
 void c64_run(void)
 {
     /* cpu_run executes a whole raster line's worth of instructions per call;
-       CIA timers tick per line, keypad IO every 8 lines. */
+       CIA timers tick every 4 lines (still 60x finer than their 60 Hz IRQ),
+       keypad IO every 16 lines. */
     unsigned int line = 0;
     for (;;)
     {
@@ -111,9 +112,13 @@ void c64_run(void)
             return;
         if (!vic_emulate())
             return;
-        cia1_emulate();
-        cia2_emulate();
-        if ((++line & 7) == 0 && !io_emulate())
+        ++line;
+        if ((line & 3) == 0)
+        {
+            cia1_emulate();
+            cia2_emulate();
+        }
+        if ((line & 15) == 0 && !io_emulate())
             return;   /* CLEAR pressed */
     }
 }

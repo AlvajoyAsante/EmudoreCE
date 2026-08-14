@@ -38,31 +38,77 @@ static inline uint8_t load_byte(uint16_t addr)
     return mem_read_byte(addr);
 }
 
+/* Stack (page 1) and zero page always live in mem_low: skip the page table
+   and IO checks entirely. */
 __attribute__((__always_inline__))
 static inline void push(uint8_t v)
 {
-    mem_write_byte(ADDR_STACK + cpu.sp, v);
+    mem_low[ADDR_STACK + cpu.sp] = v;
     cpu.sp--;
 }
 
 __attribute__((__always_inline__))
 static inline uint8_t pop(void)
 {
-    return load_byte((uint16_t)(++cpu.sp + ADDR_STACK));
+    ++cpu.sp;
+    return mem_low[ADDR_STACK + cpu.sp];
 }
 
+/* Code fetch: the PC never points at an IO page in real code, so the NULL
+   (IO) table check is skipped. */
 __attribute__((__always_inline__))
 static inline uint8_t fetch_op(void)
 {
-    return load_byte(cpu.pc++);
+    U16B a;
+    a.w = cpu.pc++;
+    return mem_rd_pg[a.b.hi].ptr[a.w];
 }
 
 __attribute__((__always_inline__))
 static inline uint16_t fetch_opw(void)
 {
-    uint16_t v = mem_read_word(cpu.pc);
-    cpu.pc += 2;
-    return v;
+    U16B v;
+    v.b.lo = fetch_op();
+    v.b.hi = fetch_op();
+    return v.w;
+}
+
+/* Zero-page operand reads (never IO/ROM). */
+__attribute__((__always_inline__))
+static inline uint8_t zp_read(void)
+{
+    return mem_low[fetch_op()];
+}
+
+__attribute__((__always_inline__))
+static inline uint8_t zpx_read(void)
+{
+    return mem_low[(uint8_t)(fetch_op() + cpu.x)];
+}
+
+__attribute__((__always_inline__))
+static inline uint8_t zpy_read(void)
+{
+    return mem_low[(uint8_t)(fetch_op() + cpu.y)];
+}
+
+/* 16-bit pointer fetch from zero page (wraps at $FF). */
+__attribute__((__always_inline__))
+static inline uint16_t zp_word(uint8_t zp)
+{
+    U16B r;
+    r.b.lo = mem_low[zp];
+    r.b.hi = mem_low[(uint8_t)(zp + 1)];
+    return r.w;
+}
+
+/* Zero-page store: direct, but $0001 still switches banks. */
+__attribute__((__always_inline__))
+static inline void zp_write(uint8_t zp, uint8_t v)
+{
+    mem_low[zp] = v;
+    if (zp == ADDR_MEM_LAYOUT)
+        mem_setup_banks(v);
 }
 
 static void tick(uint8_t v)
@@ -101,12 +147,11 @@ static void set_flags(uint8_t v)
 
 AM_INLINE uint16_t addr_zero(void)  { return fetch_op(); }
 AM_INLINE uint16_t addr_zerox(void) { return (fetch_op() + cpu.x) & 0xff; }
-AM_INLINE uint16_t addr_zeroy(void) { return (fetch_op() + cpu.y) & 0xff; }
 AM_INLINE uint16_t addr_abs(void)   { return fetch_opw(); }
 AM_INLINE uint16_t addr_absx(void)  { return fetch_opw() + cpu.x; }
 AM_INLINE uint16_t addr_absy(void)  { return fetch_opw() + cpu.y; }
-AM_INLINE uint16_t addr_indx(void)  { return mem_read_word((addr_zero() + cpu.x) & 0xff); }
-AM_INLINE uint16_t addr_indy(void)  { return mem_read_word(addr_zero()) + cpu.y; }
+AM_INLINE uint16_t addr_indx(void)  { return zp_word((uint8_t)(fetch_op() + cpu.x)); }
+AM_INLINE uint16_t addr_indy(void)  { return zp_word(fetch_op()) + cpu.y; }
 
 /* ---- data handling / memory ------------------------------------------- */
 
@@ -422,7 +467,7 @@ static inline bool cpu_step(void)
     {
     case 0x00: brk(); break;
     case 0x01: ora(load_byte(addr_indx()), 6); break;
-    case 0x05: ora(load_byte(addr_zero()), 3); break;
+    case 0x05: ora(zp_read(), 3); break;
     case 0x06: asl_mem(addr_zero(), 5); break;
     case 0x08: php(); break;
     case 0x09: ora(fetch_op(), 2); break;
@@ -431,7 +476,7 @@ static inline bool cpu_step(void)
     case 0x0E: asl_mem(addr_abs(), 6); break;
     case 0x10: bpl(); break;
     case 0x11: ora(load_byte(addr_indy()), 5); break;
-    case 0x15: ora(load_byte(addr_zerox()), 4); break;
+    case 0x15: ora(zpx_read(), 4); break;
     case 0x16: asl_mem(addr_zerox(), 6); break;
     case 0x18: clc(); break;
     case 0x19: ora(load_byte(addr_absy()), 4); break;
@@ -440,7 +485,7 @@ static inline bool cpu_step(void)
     case 0x20: jsr(); break;
     case 0x21: _and(load_byte(addr_indx()), 6); break;
     case 0x24: bit(addr_zero(), 3); break;
-    case 0x25: _and(load_byte(addr_zero()), 3); break;
+    case 0x25: _and(zp_read(), 3); break;
     case 0x26: rol_mem(addr_zero(), 5); break;
     case 0x28: plp(); break;
     case 0x29: _and(fetch_op(), 2); break;
@@ -450,7 +495,7 @@ static inline bool cpu_step(void)
     case 0x2E: rol_mem(addr_abs(), 6); break;
     case 0x30: bmi(); break;
     case 0x31: _and(load_byte(addr_indy()), 5); break;
-    case 0x35: _and(load_byte(addr_zerox()), 4); break;
+    case 0x35: _and(zpx_read(), 4); break;
     case 0x36: rol_mem(addr_zerox(), 6); break;
     case 0x38: sec(); break;
     case 0x39: _and(load_byte(addr_absy()), 4); break;
@@ -458,7 +503,7 @@ static inline bool cpu_step(void)
     case 0x3E: rol_mem(addr_absx(), 7); break;
     case 0x40: rti(); break;
     case 0x41: eor(load_byte(addr_indx()), 6); break;
-    case 0x45: eor(load_byte(addr_zero()), 3); break;
+    case 0x45: eor(zp_read(), 3); break;
     case 0x46: lsr_mem(addr_zero(), 5); break;
     case 0x48: pha(); break;
     case 0x49: eor(fetch_op(), 2); break;
@@ -468,7 +513,7 @@ static inline bool cpu_step(void)
     case 0x4E: lsr_mem(addr_abs(), 6); break;
     case 0x50: bvc(); break;
     case 0x51: eor(load_byte(addr_indy()), 5); break;
-    case 0x55: eor(load_byte(addr_zerox()), 4); break;
+    case 0x55: eor(zpx_read(), 4); break;
     case 0x56: lsr_mem(addr_zerox(), 6); break;
     case 0x58: cli(); break;
     case 0x59: eor(load_byte(addr_absy()), 4); break;
@@ -476,7 +521,7 @@ static inline bool cpu_step(void)
     case 0x5E: lsr_mem(addr_absx(), 7); break;
     case 0x60: rts(); break;
     case 0x61: adc(load_byte(addr_indx()), 6); break;
-    case 0x65: adc(load_byte(addr_zero()), 3); break;
+    case 0x65: adc(zp_read(), 3); break;
     case 0x66: ror_mem(addr_zero(), 5); break;
     case 0x68: pla(); break;
     case 0x69: adc(fetch_op(), 2); break;
@@ -486,16 +531,16 @@ static inline bool cpu_step(void)
     case 0x6E: ror_mem(addr_abs(), 6); break;
     case 0x70: bvs(); break;
     case 0x71: adc(load_byte(addr_indy()), 5); break;
-    case 0x75: adc(load_byte(addr_zerox()), 4); break;
+    case 0x75: adc(zpx_read(), 4); break;
     case 0x76: ror_mem(addr_zerox(), 6); break;
     case 0x78: sei(); break;
     case 0x79: adc(load_byte(addr_absy()), 4); break;
     case 0x7D: adc(load_byte(addr_absx()), 4); break;
     case 0x7E: ror_mem(addr_absx(), 7); break;
     case 0x81: sta(addr_indx(), 6); break;
-    case 0x84: sty(addr_zero(), 3); break;
-    case 0x85: sta(addr_zero(), 3); break;
-    case 0x86: stx(addr_zero(), 3); break;
+    case 0x84: zp_write(fetch_op(), cpu.y); tick(3); break;
+    case 0x85: zp_write(fetch_op(), cpu.a); tick(3); break;
+    case 0x86: zp_write(fetch_op(), cpu.x); tick(3); break;
     case 0x88: dey(); break;
     case 0x8A: txa(); break;
     case 0x8C: sty(addr_abs(), 4); break;
@@ -503,9 +548,9 @@ static inline bool cpu_step(void)
     case 0x8E: stx(addr_abs(), 4); break;
     case 0x90: bcc(); break;
     case 0x91: sta(addr_indy(), 6); break;
-    case 0x94: sty(addr_zerox(), 4); break;
-    case 0x95: sta(addr_zerox(), 4); break;
-    case 0x96: stx(addr_zeroy(), 4); break;
+    case 0x94: zp_write((uint8_t)(fetch_op() + cpu.x), cpu.y); tick(4); break;
+    case 0x95: zp_write((uint8_t)(fetch_op() + cpu.x), cpu.a); tick(4); break;
+    case 0x96: zp_write((uint8_t)(fetch_op() + cpu.y), cpu.x); tick(4); break;
     case 0x98: tya(); break;
     case 0x99: sta(addr_absy(), 5); break;
     case 0x9A: txs(); break;
@@ -513,9 +558,9 @@ static inline bool cpu_step(void)
     case 0xA0: ldy(fetch_op(), 2); break;
     case 0xA1: lda(load_byte(addr_indx()), 6); break;
     case 0xA2: ldx(fetch_op(), 2); break;
-    case 0xA4: ldy(load_byte(addr_zero()), 3); break;
-    case 0xA5: lda(load_byte(addr_zero()), 3); break;
-    case 0xA6: ldx(load_byte(addr_zero()), 3); break;
+    case 0xA4: ldy(zp_read(), 3); break;
+    case 0xA5: lda(zp_read(), 3); break;
+    case 0xA6: ldx(zp_read(), 3); break;
     case 0xA8: tay(); break;
     case 0xA9: lda(fetch_op(), 2); break;
     case 0xAA: tax(); break;
@@ -524,9 +569,9 @@ static inline bool cpu_step(void)
     case 0xAE: ldx(load_byte(addr_abs()), 4); break;
     case 0xB0: bcs(); break;
     case 0xB1: lda(load_byte(addr_indy()), 5); break;
-    case 0xB4: ldy(load_byte(addr_zerox()), 4); break;
-    case 0xB5: lda(load_byte(addr_zerox()), 4); break;
-    case 0xB6: ldx(load_byte(addr_zeroy()), 4); break;
+    case 0xB4: ldy(zpx_read(), 4); break;
+    case 0xB5: lda(zpx_read(), 4); break;
+    case 0xB6: ldx(zpy_read(), 4); break;
     case 0xB8: clv(); break;
     case 0xB9: lda(load_byte(addr_absy()), 4); break;
     case 0xBA: tsx(); break;
@@ -535,8 +580,8 @@ static inline bool cpu_step(void)
     case 0xBE: ldx(load_byte(addr_absy()), 4); break;
     case 0xC0: cpy(fetch_op(), 2); break;
     case 0xC1: cmp(load_byte(addr_indx()), 6); break;
-    case 0xC4: cpy(load_byte(addr_zero()), 3); break;
-    case 0xC5: cmp(load_byte(addr_zero()), 3); break;
+    case 0xC4: cpy(zp_read(), 3); break;
+    case 0xC5: cmp(zp_read(), 3); break;
     case 0xC6: dec(addr_zero(), 5); break;
     case 0xC8: iny(); break;
     case 0xC9: cmp(fetch_op(), 2); break;
@@ -546,7 +591,7 @@ static inline bool cpu_step(void)
     case 0xCE: dec(addr_abs(), 6); break;
     case 0xD0: bne(); break;
     case 0xD1: cmp(load_byte(addr_indy()), 5); break;
-    case 0xD5: cmp(load_byte(addr_zerox()), 4); break;
+    case 0xD5: cmp(zpx_read(), 4); break;
     case 0xD6: dec(addr_zerox(), 6); break;
     case 0xD8: cld(); break;
     case 0xD9: cmp(load_byte(addr_absy()), 4); break;
@@ -554,8 +599,8 @@ static inline bool cpu_step(void)
     case 0xDE: dec(addr_absx(), 7); break;
     case 0xE0: cpx(fetch_op(), 2); break;
     case 0xE1: sbc(load_byte(addr_indx()), 6); break;
-    case 0xE4: cpx(load_byte(addr_zero()), 3); break;
-    case 0xE5: sbc(load_byte(addr_zero()), 3); break;
+    case 0xE4: cpx(zp_read(), 3); break;
+    case 0xE5: sbc(zp_read(), 3); break;
     case 0xE6: inc(addr_zero(), 5); break;
     case 0xE8: inx(); break;
     case 0xE9: sbc(fetch_op(), 2); break;
@@ -565,7 +610,7 @@ static inline bool cpu_step(void)
     case 0xEE: inc(addr_abs(), 6); break;
     case 0xF0: beq(); break;
     case 0xF1: sbc(load_byte(addr_indy()), 5); break;
-    case 0xF5: sbc(load_byte(addr_zerox()), 4); break;
+    case 0xF5: sbc(zpx_read(), 4); break;
     case 0xF6: inc(addr_zerox(), 6); break;
     case 0xF8: sed(); break;
     case 0xF9: sbc(load_byte(addr_absy()), 4); break;

@@ -19,6 +19,9 @@ unsigned int vic_frames(void);
 /* diagnostics: unsupported graphic mode that stopped vic_emulate */
 extern uint8_t vic_bad_mode;
 
+/* ask for the next frame to be rendered (used on keyboard activity) */
+void vic_request_render(void);
+
 /* cpu.cycles value at which the next raster line is processed; read by
    c64_run's CPU batching loop */
 extern unsigned int vic_raster_due;

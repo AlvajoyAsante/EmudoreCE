@@ -20,8 +20,10 @@
 #define MEM_RAM_VRAM ((uint8_t *)0xD52C00)
 
 uint8_t *mem_ram;
+uint8_t *mem_low;
 MemPage mem_rd_pg[256];
 MemPage mem_wr_pg[256];
+static uint8_t ram_low[MEM_LOW_SIZE]; /* hot C64 pages $00-$0F in fast RAM */
 static uint8_t rom_basic[0x2000];
 static uint8_t rom_kernal[0x2000];
 static uint8_t rom_chars[0x1000];
@@ -29,8 +31,10 @@ static uint8_t banks[7];
 
 void mem_init(void)
 {
-    mem_ram = MEM_RAM_VRAM;
-    memset(mem_ram, 0, MEM_SIZE);
+    mem_ram = MEM_RAM_VRAM; /* bytes 0..MEM_LOW_SIZE-1 unused (see ram_low) */
+    mem_low = ram_low;
+    memset(ram_low, 0, sizeof(ram_low));
+    memset(mem_ram + MEM_LOW_SIZE, 0, MEM_SIZE - MEM_LOW_SIZE);
     mem_setup_banks(LORAM | HIRAM | CHAREN);
     mem_write_byte_no_io(ADDR_DATA_DIR, 0x2f);
 }
@@ -67,7 +71,12 @@ void mem_setup_banks(uint8_t v)
         banks[MEM_BANK_CHAREN] = MEM_BANK_ROM;
 
     /* Rebuild the fast page tables (pointers are biased so p[addr] works). */
-    for (i = 0; i < 256; ++i)
+    for (i = 0; i < 16; ++i)
+    {
+        mem_rd_pg[i].ptr = mem_low;
+        mem_wr_pg[i].ptr = mem_low;
+    }
+    for (i = 16; i < 256; ++i)
     {
         mem_rd_pg[i].ptr = mem_ram;
         mem_wr_pg[i].ptr = mem_ram;
