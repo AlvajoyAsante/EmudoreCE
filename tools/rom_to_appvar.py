@@ -30,16 +30,20 @@ LZSS_MATCH_CANDIDATES = 64
 
 # package kind -> (package id, expected ROM size, C64 load address)
 # ids must be <= 4 chars: the AppVar name is "EC" + id + 2 hex digits (<=8).
+# "dsk" is a variable-size disk-file package built by tools/d64_to_appvar.py.
 KINDS = {
     "basic":  ("BAS", 0x2000, 0xA000),
     "kernal": ("KRN", 0x2000, 0xE000),
     "chars":  ("CHR", 0x1000, 0xD000),
+    "dsk":    ("DSK", None, 0),
 }
-KIND_INDEX = {"basic": 0, "kernal": 1, "chars": 2}
+KIND_INDEX = {"basic": 0, "kernal": 1, "chars": 2, "dsk": 3}
 
 
 def validate_rom(data: bytes, kind: str) -> None:
     expected = KINDS[kind][1]
+    if expected is None:
+        return
     if len(data) != expected:
         raise ValueError(
             f"a C64 {kind} ROM must be exactly {expected:#x} bytes "
@@ -201,24 +205,14 @@ def find_convbin(explicit: str | None) -> str:
     raise FileNotFoundError("convbin was not found; pass --convbin or set CEDEV")
 
 
-def convert(
-    input_path: Path,
+def write_chunks(
+    chunks: list[bytes],
+    package_id: str,
     output_dir: Path,
-    kind: str,
     convbin: str,
-    compress: bool,
 ) -> list[Path]:
-    data = input_path.read_bytes()
-    validate_rom(data, kind)
-    package_id = KINDS[kind][0]
-
-    stored, compression = maybe_compress(data, compress)
-    chunks = build_chunks(stored, kind, len(data), compression)
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
-
-    if compression != COMPRESSION_NONE:
-        print(f"compressed {len(data)} bytes down to {len(stored)} bytes")
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         for index, chunk in enumerate(chunks):
@@ -241,6 +235,26 @@ def convert(
             outputs.append(output_path)
 
     return outputs
+
+
+def convert(
+    input_path: Path,
+    output_dir: Path,
+    kind: str,
+    convbin: str,
+    compress: bool,
+) -> list[Path]:
+    data = input_path.read_bytes()
+    validate_rom(data, kind)
+    package_id = KINDS[kind][0]
+
+    stored, compression = maybe_compress(data, compress)
+    chunks = build_chunks(stored, kind, len(data), compression)
+
+    if compression != COMPRESSION_NONE:
+        print(f"compressed {len(data)} bytes down to {len(stored)} bytes")
+
+    return write_chunks(chunks, package_id, output_dir, convbin)
 
 
 def parse_args() -> argparse.Namespace:

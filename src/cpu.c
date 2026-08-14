@@ -13,6 +13,7 @@
 #include "cpu.h"
 #include "memory.h"
 #include "util.h"
+#include "drive.h"
 
 CpuState cpu;
 
@@ -20,6 +21,11 @@ CpuState cpu;
    the run loop (dbg_printf inside the hot path clobbers the IX frame). */
 uint8_t  cpu_illegal_op;
 uint16_t cpu_illegal_pc;
+
+/* BRK diagnostics: a runaway program hitting BRK warm-starts BASIC, which
+   looks like "nothing happened". main() reports these after the run loop. */
+uint16_t cpu_last_brk_pc;
+unsigned int cpu_brk_count;
 
 /* register/flag accessors as macros (read) and assignment helpers (write) */
 #define A()  (cpu.a)
@@ -380,6 +386,104 @@ static void cpy(uint8_t v, uint8_t cycles)
     tick(cycles);
 }
 
+/* ---- undocumented opcodes (stable subset, used by real games) ---------- */
+
+static void lax(uint8_t v, uint8_t cycles)
+{
+    cpu.a = cpu.x = v;
+    SET_ZF(v);
+    SET_NF(v);
+    tick(cycles);
+}
+static void sax(uint16_t addr, uint8_t cycles)
+{
+    mem_write_byte(addr, cpu.a & cpu.x);
+    tick(cycles);
+}
+/* RMW combos keep the documented double-write behaviour (IO side effects) */
+static void slo(uint16_t addr, uint8_t cycles)
+{
+    uint8_t v = load_byte(addr);
+    mem_write_byte(addr, v);
+    v = asl(v);
+    mem_write_byte(addr, v);
+    ora(v, cycles);
+}
+static void rla(uint16_t addr, uint8_t cycles)
+{
+    uint8_t v = load_byte(addr);
+    mem_write_byte(addr, v);
+    v = rol(v);
+    mem_write_byte(addr, v);
+    _and(v, cycles);
+}
+static void sre(uint16_t addr, uint8_t cycles)
+{
+    uint8_t v = load_byte(addr);
+    mem_write_byte(addr, v);
+    v = lsr(v);
+    mem_write_byte(addr, v);
+    eor(v, cycles);
+}
+static void rra(uint16_t addr, uint8_t cycles)
+{
+    uint8_t v = load_byte(addr);
+    mem_write_byte(addr, v);
+    v = ror(v);
+    mem_write_byte(addr, v);
+    adc(v, cycles);
+}
+static void dcp(uint16_t addr, uint8_t cycles)
+{
+    uint8_t v = load_byte(addr);
+    mem_write_byte(addr, v);
+    v--;
+    mem_write_byte(addr, v);
+    cmp(v, cycles);
+}
+static void isc(uint16_t addr, uint8_t cycles)
+{
+    uint8_t v = load_byte(addr);
+    mem_write_byte(addr, v);
+    v++;
+    mem_write_byte(addr, v);
+    sbc(v, cycles);
+}
+static void anc(uint8_t v)
+{
+    _and(v, 2);
+    cpu.cf = cpu.nf;
+}
+static void alr(uint8_t v)
+{
+    cpu.a = lsr(cpu.a & v);
+    tick(2);
+}
+static void arr(uint8_t v)
+{
+    cpu.a = (uint8_t)(((cpu.a & v) >> 1) | ((uint8_t)cpu.cf << 7));
+    SET_ZF(cpu.a);
+    SET_NF(cpu.a);
+    cpu.cf = (cpu.a & 0x40) != 0;
+    cpu.of = (((cpu.a >> 6) ^ (cpu.a >> 5)) & 1) != 0;
+    tick(2);
+}
+static void sbx(uint8_t v)
+{
+    uint8_t t = cpu.a & cpu.x;
+    cpu.cf = t >= v;
+    cpu.x = (uint8_t)(t - v);
+    SET_ZF(cpu.x);
+    SET_NF(cpu.x);
+    tick(2);
+}
+/* multi-byte NOPs still consume their operand */
+static void nop_arg(uint16_t addr, uint8_t cycles)
+{
+    (void)addr;
+    tick(cycles);
+}
+
 /* JSR pushes the address of its own last byte, not the next instruction. */
 static void jsr(void)
 {
@@ -409,6 +513,8 @@ static void nop(void) { tick(2); }
 
 static void brk(void)
 {
+    cpu_last_brk_pc = (uint16_t)(cpu.pc - 1);
+    ++cpu_brk_count;
     push(((cpu.pc + 1) >> 8) & 0xff);
     push(((cpu.pc + 1) & 0xff));
     push(cpu_flags());
@@ -616,6 +722,92 @@ static inline bool cpu_step(void)
     case 0xF9: sbc(load_byte(addr_absy()), 4); break;
     case 0xFD: sbc(load_byte(addr_absx()), 4); break;
     case 0xFE: inc(addr_absx(), 7); break;
+    /* ---- undocumented opcodes ---- */
+    case 0xA3: lax(load_byte(addr_indx()), 6); break;
+    case 0xA7: lax(zp_read(), 3); break;
+    case 0xAB: lax(fetch_op(), 2); break;
+    case 0xAF: lax(load_byte(addr_abs()), 4); break;
+    case 0xB3: lax(load_byte(addr_indy()), 5); break;
+    case 0xB7: lax(zpy_read(), 4); break;
+    case 0xBF: lax(load_byte(addr_absy()), 4); break;
+    case 0x83: sax(addr_indx(), 6); break;
+    case 0x87: sax(addr_zero(), 3); break;
+    case 0x8F: sax(addr_abs(), 4); break;
+    case 0x97: sax((uint16_t)((fetch_op() + cpu.y) & 0xff), 4); break;
+    case 0x03: slo(addr_indx(), 8); break;
+    case 0x07: slo(addr_zero(), 5); break;
+    case 0x0F: slo(addr_abs(), 6); break;
+    case 0x13: slo(addr_indy(), 8); break;
+    case 0x17: slo(addr_zerox(), 6); break;
+    case 0x1B: slo(addr_absy(), 7); break;
+    case 0x1F: slo(addr_absx(), 7); break;
+    case 0x23: rla(addr_indx(), 8); break;
+    case 0x27: rla(addr_zero(), 5); break;
+    case 0x2F: rla(addr_abs(), 6); break;
+    case 0x33: rla(addr_indy(), 8); break;
+    case 0x37: rla(addr_zerox(), 6); break;
+    case 0x3B: rla(addr_absy(), 7); break;
+    case 0x3F: rla(addr_absx(), 7); break;
+    case 0x43: sre(addr_indx(), 8); break;
+    case 0x47: sre(addr_zero(), 5); break;
+    case 0x4F: sre(addr_abs(), 6); break;
+    case 0x53: sre(addr_indy(), 8); break;
+    case 0x57: sre(addr_zerox(), 6); break;
+    case 0x5B: sre(addr_absy(), 7); break;
+    case 0x5F: sre(addr_absx(), 7); break;
+    case 0x63: rra(addr_indx(), 8); break;
+    case 0x67: rra(addr_zero(), 5); break;
+    case 0x6F: rra(addr_abs(), 6); break;
+    case 0x73: rra(addr_indy(), 8); break;
+    case 0x77: rra(addr_zerox(), 6); break;
+    case 0x7B: rra(addr_absy(), 7); break;
+    case 0x7F: rra(addr_absx(), 7); break;
+    case 0xC3: dcp(addr_indx(), 8); break;
+    case 0xC7: dcp(addr_zero(), 5); break;
+    case 0xCF: dcp(addr_abs(), 6); break;
+    case 0xD3: dcp(addr_indy(), 8); break;
+    case 0xD7: dcp(addr_zerox(), 6); break;
+    case 0xDB: dcp(addr_absy(), 7); break;
+    case 0xDF: dcp(addr_absx(), 7); break;
+    case 0xE3: isc(addr_indx(), 8); break;
+    case 0xE7: isc(addr_zero(), 5); break;
+    case 0xEF: isc(addr_abs(), 6); break;
+    case 0xF3: isc(addr_indy(), 8); break;
+    case 0xF7: isc(addr_zerox(), 6); break;
+    case 0xFB: isc(addr_absy(), 7); break;
+    case 0xFF: isc(addr_absx(), 7); break;
+    case 0x0B: case 0x2B: anc(fetch_op()); break;
+    case 0x4B: alr(fetch_op()); break;
+    case 0x6B: arr(fetch_op()); break;
+    case 0xCB: sbx(fetch_op()); break;
+    case 0xEB: sbc(fetch_op(), 2); break;
+    case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA:
+        nop(); break;
+    case 0x80: case 0x82: case 0x89: case 0xC2: case 0xE2:
+        nop_arg(fetch_op(), 2); break;
+    case 0x04: case 0x44: case 0x64:
+        nop_arg(addr_zero(), 3); break;
+    case 0x14: case 0x34: case 0x54: case 0x74: case 0xD4: case 0xF4:
+        nop_arg(addr_zerox(), 4); break;
+    case 0x0C:
+        nop_arg(addr_abs(), 4); break;
+    case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC: case 0xFC:
+        nop_arg(addr_absx(), 4); break;
+    case DRIVE_TRAP_OPCODE: /* KERNAL LOAD trap planted at $F4A5 by drive.c */
+        if (drive_trap_load())
+            break;
+        /* trap opcode fetched anywhere else: treat as the JAM it is */
+        cpu_illegal_op = insn;
+        cpu_illegal_pc = cpu.pc;
+        retval = false;
+        break;
+    case DRIVE_TRAP2_OPCODE: /* resident game fastloader trap (drive.c) */
+        if (drive_trap_fastload())
+            break;
+        cpu_illegal_op = insn;
+        cpu_illegal_pc = cpu.pc;
+        retval = false;
+        break;
     default:
         cpu_illegal_op = insn;
         cpu_illegal_pc = cpu.pc;

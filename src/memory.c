@@ -111,7 +111,8 @@ uint8_t mem_read_io(uint16_t addr)
         return cia1_read_register(addr & 0x0f);
     if (page == ADDR_CIA2_PAGE)
         return cia2_read_register(addr & 0x0f);
-    return vic_read_register(addr & 0x7f);
+    /* VIC registers mirror every 64 bytes across $D000-$D3FF */
+    return vic_read_register(addr & 0x3f);
 }
 
 void mem_write_io(uint16_t addr, uint8_t v)
@@ -122,7 +123,7 @@ void mem_write_io(uint16_t addr, uint8_t v)
     else if (page == ADDR_CIA2_PAGE)
         cia2_write_register(addr & 0x0f, v);
     else
-        vic_write_register(addr & 0x7f, v);
+        vic_write_register(addr & 0x3f, v);
 }
 
 uint8_t *mem_basic_rom_ptr(void)

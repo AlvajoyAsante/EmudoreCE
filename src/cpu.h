@@ -28,6 +28,10 @@ extern CpuState cpu;
 extern uint8_t  cpu_illegal_op;
 extern uint16_t cpu_illegal_pc;
 
+/* diagnostics: BRK executions (runaway code warm-starting BASIC) */
+extern uint16_t cpu_last_brk_pc;
+extern unsigned int cpu_brk_count;
+
 void cpu_reset(void);
 /* Execute instructions until cpu.cycles reaches until_cycles (wrap-safe).
    Returns false on an illegal opcode. */

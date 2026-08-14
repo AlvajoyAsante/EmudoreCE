@@ -20,6 +20,7 @@
 #include "io.h"
 #include "util.h"
 #include "CEPackage.h"
+#include "drive.h"
 
 /* The KERNAL RAM test ($FD6C-$FD87) walks all 40 KiB byte-by-byte (~1.3M
    emulated cycles of boot time). Replace it with "top of RAM = $A000" using
@@ -93,6 +94,8 @@ void c64_init(void)
         return;
     if (!c64_boot_roms())
         return;
+    if (drive_init())
+        drive_patch_kernal();
     cia1_reset();
     cia2_reset();
     vic_reset();
@@ -120,6 +123,7 @@ void c64_run(void)
         {
             cia1_emulate();
             cia2_emulate();
+            drive_tick();
         }
     }
 }

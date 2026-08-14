@@ -19,6 +19,15 @@ unsigned int vic_frames(void);
 /* diagnostics: unsupported graphic mode that stopped vic_emulate */
 extern uint8_t vic_bad_mode;
 
+/* diagnostics: display configuration snapshot printed by main() at exit */
+typedef struct
+{
+    uint8_t cr1, cr2, mem_ptrs, border, bg0, mode, sprite_en, irq_en;
+    uint16_t screen_mem, char_mem, bitmap_mem, vic_base;
+    int raster_irq;
+} VicDebug;
+void vic_debug_snapshot(VicDebug *d);
+
 /* ask for the next frame to be rendered (used on keyboard activity) */
 void vic_request_render(void);
 

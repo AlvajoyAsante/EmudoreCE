@@ -60,6 +60,24 @@ void vic_request_render(void)
 /* set when vic_emulate stops on an unsupported mode; reported by main() */
 uint8_t vic_bad_mode;
 
+/* Cold diagnostics for main(): copy of the display configuration. */
+void vic_debug_snapshot(VicDebug *d)
+{
+    d->cr1 = cr1;
+    d->cr2 = cr2;
+    d->mem_ptrs = mem_pointers;
+    d->border = border_color;
+    d->bg0 = bgcolor[0];
+    d->mode = graphic_mode;
+    d->sprite_en = sprite_enabled;
+    d->screen_mem = screen_mem;
+    d->char_mem = char_mem;
+    d->bitmap_mem = bitmap_mem;
+    d->raster_irq = raster_irq;
+    d->irq_en = irq_enabled;
+    d->vic_base = cia2_vic_base_address();
+}
+
 void vic_reset(void)
 {
     int i;
@@ -136,21 +154,6 @@ static int sprite_x(int n)
 
 /* ---- graphics data fetch ---------------------------------------------- */
 
-static uint8_t get_screen_char(int column, int row)
-{
-    return mem_vic_read_byte(screen_mem + (row * VIC_G_COLS) + column);
-}
-
-static uint8_t get_char_color(int column, int row)
-{
-    return mem_read_byte_no_io(ADDR_COLOR_RAM + (row * VIC_G_COLS) + column) & 0x0f;
-}
-
-static uint8_t get_bitmap_data(int column, int row, int line)
-{
-    return mem_vic_read_byte(bitmap_mem + (row * VIC_G_COLS + column) * 8 + line);
-}
-
 static uint16_t get_sprite_ptr(int n)
 {
     return VIC_SPRITE_SIZE * mem_vic_read_byte(screen_mem + VIC_SPRITE_PTRS_OFFSET + n);
@@ -177,11 +180,13 @@ static void draw_raster_char_mode(void)
 
     /* All source pointers are resolved ONCE per line: screen row and colour
        RAM are contiguous 40-byte runs, and the 2 KiB char generator block is
-       either entirely inside or outside the char-ROM window. */
-    addr = (uint16_t)(cia2_vic_base_address() + screen_mem + row * VIC_G_COLS);
+       either entirely inside or outside the char-ROM window. The VIC's 14
+       address bits wrap inside the 16 KiB bank. */
+    addr = (uint16_t)(cia2_vic_base_address() +
+                      ((screen_mem + row * VIC_G_COLS) & 0x3fff));
     scr = mem_host_ptr((uint16_t)addr);
     colram = mem_host_ptr((uint16_t)(ADDR_COLOR_RAM + row * VIC_G_COLS));
-    addr = (uint16_t)(cia2_vic_base_address() + char_mem);
+    addr = (uint16_t)(cia2_vic_base_address() + (char_mem & 0x3fff));
     if ((addr >= 0x1000 && addr < 0x2000) || (addr >= 0x9000 && addr < 0xa000))
         chardata = mem_chars_rom_ptr() + (addr & 0x0fff);
     else
@@ -195,100 +200,140 @@ static void draw_raster_char_mode(void)
         c1 = VIC_G_COLS - 1;
     }
 
-    for (c = c0; c < c1; ++c)
+    /* running pointers: eZ80 lowers per-column shifts/multiplies to runtime
+       helper CALLS, so the loop carries incremented pointers instead */
     {
-        uint8_t data = chardata[(scr[c] << 3) + char_row];
-        uint8_t color = colram[c] & 0x0f;
-        uint8_t *d = dst0 + (c << 3) + xs;
+        const uint8_t *chline = chardata + char_row;
+        uint8_t *d = dst0 + (c0 << 3) + xs;
 
-        if (c == VIC_G_COLS - 1 && xs)
-            break; /* scrolled last column would overrun the row */
+        for (c = c0; c < c1; ++c, d += 8)
+        {
+            uint8_t data = chline[(uint16_t)((uint16_t)scr[c] << 3)];
+            uint8_t color = colram[c] & 0x0f;
 
-        if (graphic_mode == GM_MC_CHAR && (color & 0x08))
-        {
-            uint8_t mc3 = color & 0x07;
-            uint8_t px;
-            px = (data >> 6) & 3; d[0] = d[1] = (px == 3) ? mc3 : bgcolor[px];
-            px = (data >> 4) & 3; d[2] = d[3] = (px == 3) ? mc3 : bgcolor[px];
-            px = (data >> 2) & 3; d[4] = d[5] = (px == 3) ? mc3 : bgcolor[px];
-            px = data & 3;        d[6] = d[7] = (px == 3) ? mc3 : bgcolor[px];
-        }
-        else
-        {
-            if (data & 0x80) d[0] = color;
-            if (data & 0x40) d[1] = color;
-            if (data & 0x20) d[2] = color;
-            if (data & 0x10) d[3] = color;
-            if (data & 0x08) d[4] = color;
-            if (data & 0x04) d[5] = color;
-            if (data & 0x02) d[6] = color;
-            if (data & 0x01) d[7] = color;
+            if (c == VIC_G_COLS - 1 && xs)
+                break; /* scrolled last column would overrun the row */
+
+            if (graphic_mode == GM_MC_CHAR && (color & 0x08))
+            {
+                uint8_t mc3 = color & 0x07;
+                uint8_t px;
+                px = (data >> 6) & 3; d[0] = d[1] = (px == 3) ? mc3 : bgcolor[px];
+                px = (data >> 4) & 3; d[2] = d[3] = (px == 3) ? mc3 : bgcolor[px];
+                px = (data >> 2) & 3; d[4] = d[5] = (px == 3) ? mc3 : bgcolor[px];
+                px = data & 3;        d[6] = d[7] = (px == 3) ? mc3 : bgcolor[px];
+            }
+            else
+            {
+                if (data & 0x80) d[0] = color;
+                if (data & 0x40) d[1] = color;
+                if (data & 0x20) d[2] = color;
+                if (data & 0x10) d[3] = color;
+                if (data & 0x08) d[4] = color;
+                if (data & 0x04) d[5] = color;
+                if (data & 0x02) d[6] = color;
+                if (data & 0x01) d[7] = color;
+            }
         }
     }
 }
 
-static void draw_bitmap(int x, int y, uint8_t data, uint8_t color)
-{
-    uint8_t forec = (color >> 4) & 0xf;
-    uint8_t bgc = color & 0xf;
-    int i;
-    for (i = 0; i < 8; ++i)
-    {
-        int xoffs = x + 8 - i + horizontal_scroll();
-        if (xoffs > VIC_G_FIRST_COL + VIC_G_RES_X)
-            continue;
-        if (ISSET_BIT(data, i))
-            io_screen_update_pixel(xoffs, y, forec);
-        else
-            io_screen_update_pixel(xoffs, y, bgc);
-    }
-}
-
-static void draw_mcbitmap(int x, int y, uint8_t data, uint8_t scolor, uint8_t rcolor)
-{
-    int i;
-    for (i = 0; i < 4; ++i)
-    {
-        uint8_t c;
-        uint8_t cs = (data >> (i * 2)) & 0x3;
-        switch (cs)
-        {
-        case 0: c = bgcolor[0]; break;
-        case 1: c = (scolor >> 4) & 0xf; break;
-        case 2: c = scolor & 0xf; break;
-        default: c = rcolor; break;
-        }
-        {
-            int xoffs = x + 8 - i * 2 + horizontal_scroll();
-            io_screen_update_pixel(xoffs, y, c);
-            io_screen_update_pixel(xoffs + 1, y, c);
-        }
-    }
-}
-
+/* Bitmap modes, same fast shape as the char renderer: all source pointers
+   resolved once per line, pixels written straight into the framebuffer row
+   (the old path made a bounds-checked io_screen_update_pixel CALL per pixel,
+   64000+ calls per frame). */
 static void draw_raster_bitmap_mode(void)
 {
     int rstr = get_raster_counter();
     int y = rstr - VIC_FIRST_VISIBLE_LINE;
-    int column;
+    int line = rstr - VIC_G_FIRST_LINE;
+    int row = line >> 3;
+    int xs = horizontal_scroll();
+    int c, c0 = 0, c1 = VIC_G_COLS;
+    uint16_t base = cia2_vic_base_address();
+    uint16_t addr, bmp_addr, span_end;
+    uint8_t win0, win1;
+    const uint8_t *scr, *colram, *bmp = NULL;
+    uint8_t *dst0 = io_text_row(y);
+    bool mc = (graphic_mode == GM_MC_BITMAP);
+    uint8_t lut[4];
 
-    if (rstr >= VIC_G_FIRST_LINE && rstr < VIC_G_LAST_LINE && !is_screen_off())
+    if (!dst0)
+        return;
+
+    /* bank base (bits 14-15) and 14-bit offset never overlap: compose with
+       OR, all uint16_t (the compiler backend crashes on masked int adds) */
+    addr = (uint16_t)(screen_mem + row * VIC_G_COLS);
+    addr = (uint16_t)(base | (addr & 0x3fff));
+    scr = mem_host_ptr(addr);
+    colram = mem_host_ptr((uint16_t)(ADDR_COLOR_RAM + row * VIC_G_COLS));
+
+    /* Bitmap line = 40 bytes with stride 8 (313-byte span). Use a direct
+       pointer unless the span touches a char-ROM shadow window ($1xxx/$9xxx);
+       then fall back to per-byte VIC reads (rare: bitmaps live at $2000+). */
+    bmp_addr = (uint16_t)(bitmap_mem + row * (VIC_G_COLS * 8) + (line & 7));
+    bmp_addr = (uint16_t)(base | (bmp_addr & 0x3fff));
+    span_end = (uint16_t)(bmp_addr + 312);
+    win0 = (uint8_t)(bmp_addr >> 12);
+    win1 = (uint8_t)(span_end >> 12);
+    if (win0 != 1 && win0 != 9 && win1 != 1 && win1 != 9)
+        bmp = mem_host_ptr(bmp_addr);
+
+    memset(dst0, bgcolor[0], 320);
+
+    if (!ISSET_BIT(cr2, 3))
     {
-        io_screen_draw_rect(VIC_G_FIRST_COL, y, VIC_G_RES_X, bgcolor[0]);
-        for (column = 0; column < VIC_G_COLS; ++column)
-        {
-            int x = VIC_G_FIRST_COL + column * 8;
-            int line = rstr - VIC_G_FIRST_LINE;
-            int row = line / 8;
-            int bitmap_row = line % 8;
-            uint8_t data = get_bitmap_data(column, row, bitmap_row);
-            uint8_t scolor = get_screen_char(column, row);
-            uint8_t rcolor = get_char_color(column, row);
+        c0 = 1;
+        c1 = VIC_G_COLS - 1;
+    }
 
-            if (graphic_mode == GM_BITMAP)
-                draw_bitmap(x, y, data, scolor);
+    lut[0] = bgcolor[0];
+
+    {
+        const uint8_t *bp = bmp ? bmp + (c0 << 3) : NULL;
+        uint16_t slow_addr = (uint16_t)(bmp_addr + (c0 << 3));
+        uint8_t *d = dst0 + (c0 << 3) + xs;
+
+        for (c = c0; c < c1; ++c, d += 8, slow_addr += 8)
+        {
+            uint8_t data;
+            uint8_t sc = scr[c];
+
+            if (bp)
+            {
+                data = *bp;
+                bp += 8;
+            }
             else
-                draw_mcbitmap(x, y, data, scolor, rcolor);
+                data = mem_vic_read_byte(slow_addr);
+
+            if (c == VIC_G_COLS - 1 && xs)
+                break; /* scrolled last column would overrun the row */
+
+        if (mc)
+        {
+            uint8_t px;
+            lut[1] = (sc >> 4) & 0x0f;
+            lut[2] = sc & 0x0f;
+            lut[3] = colram[c] & 0x0f;
+            px = lut[(data >> 6) & 3]; d[0] = px; d[1] = px;
+            px = lut[(data >> 4) & 3]; d[2] = px; d[3] = px;
+            px = lut[(data >> 2) & 3]; d[4] = px; d[5] = px;
+            px = lut[data & 3];        d[6] = px; d[7] = px;
+        }
+        else
+        {
+            uint8_t fg = (sc >> 4) & 0x0f;
+            uint8_t bg = sc & 0x0f;
+            d[0] = (data & 0x80) ? fg : bg;
+            d[1] = (data & 0x40) ? fg : bg;
+            d[2] = (data & 0x20) ? fg : bg;
+            d[3] = (data & 0x10) ? fg : bg;
+            d[4] = (data & 0x08) ? fg : bg;
+            d[5] = (data & 0x04) ? fg : bg;
+            d[6] = (data & 0x02) ? fg : bg;
+            d[7] = (data & 0x01) ? fg : bg;
+        }
         }
     }
 }

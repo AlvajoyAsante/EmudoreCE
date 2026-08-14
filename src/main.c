@@ -22,6 +22,7 @@
 #include "io.h"
 #include "memory.h"
 #include "CEPackage.h"
+#include "drive.h"
 
 /* File-scope palette (2 entries is enough for a status line). */
 static const uint16_t bootPalette[] = {
@@ -100,6 +101,16 @@ int main(void)
     dbg_printf("[boot] resetvec=%02x%02x\n",
                mem_kernal_rom_ptr()[0x1ffd], mem_kernal_rom_ptr()[0x1ffc]);
 
+    /* Optional disk package (ECDSKnn AppVars): patch the LOAD trap and let
+       drive_tick auto-type LOAD"*",8,1 at the READY prompt. */
+    if (drive_init())
+    {
+        drive_patch_kernal();
+        dbg_printf("[boot] disk appvar found\n");
+    }
+    else
+        dbg_printf("[boot] no disk appvar\n");
+
     dbg_printf("[boot] reset cia1\n");
     cia1_reset();
     dbg_printf("[boot] reset cia2\n");
@@ -121,6 +132,35 @@ int main(void)
         dbg_printf("[exit] unsupported gfx mode %d\n", vic_bad_mode);
     else
         dbg_printf("[exit] quit key\n");
+
+    /* drive/BRK diagnostics gathered during the run */
+    {
+        static VicDebug vd;
+        uint8_t i, n = drive_trace_count < DRIVE_TRACE_MAX
+                     ? drive_trace_count : DRIVE_TRACE_MAX;
+        dbg_printf("[drive] %u traps, %u BRKs (last at %04x)\n",
+                   (unsigned)drive_trace_count, cpu_brk_count, cpu_last_brk_pc);
+        for (i = 0; i < n; ++i)
+        {
+            DriveTrace *t = &drive_trace[i];
+            dbg_printf("[drive] #%u from=%04x name='%c%c%c' len=%u sa=%u "
+                       "entry=%u addr=%04x end=%04x\n",
+                       (unsigned)i, t->caller,
+                       t->name[0], t->name[1], t->name[2],
+                       (unsigned)t->len, (unsigned)t->sa,
+                       (unsigned)t->entry, t->addr, t->end);
+        }
+        vic_debug_snapshot(&vd);
+        dbg_printf("[vic] mode=%u cr1=%02x cr2=%02x d018=%02x base=%04x "
+                   "scr=%04x chr=%04x bmp=%04x border=%u bg0=%u spr=%02x "
+                   "rirq=%d irqen=%02x\n",
+                   (unsigned)vd.mode, vd.cr1, vd.cr2, vd.mem_ptrs,
+                   vd.vic_base, vd.screen_mem, vd.char_mem, vd.bitmap_mem,
+                   (unsigned)vd.border, (unsigned)vd.bg0,
+                   vd.sprite_en, vd.raster_irq, vd.irq_en);
+        dbg_printf("[cpu] pc=%04x $01=%02x $d011-area irqs pending\n",
+                   cpu.pc, *mem_host_ptr(1));
+    }
 
     c64_shutdown();
     gfx_End();
