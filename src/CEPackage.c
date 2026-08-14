@@ -23,13 +23,14 @@
 #define CE_PACKAGE_COMPRESSION_NONE 0
 #define CE_PACKAGE_COMPRESSION_LZSS 1
 
-#define CE_PACKAGE_COUNT 4
+#define CE_PACKAGE_COUNT 5
 
 static const uint8_t packageMagic[4] = {'E', 'M', '6', '4'};
 static const char *const packageIds[CE_PACKAGE_COUNT] = {
     CE_PACKAGE_BASIC,
     CE_PACKAGE_KERNAL,
     CE_PACKAGE_CHARS,
+    CE_PACKAGE_CART,
     CE_PACKAGE_DISK
 };
 static uint8_t directHandles[CE_PACKAGE_COUNT][CE_PACKAGE_DIRECT_CHUNKS];

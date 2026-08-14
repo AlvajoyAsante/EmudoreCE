@@ -28,6 +28,10 @@ extern CpuState cpu;
 extern uint8_t  cpu_illegal_op;
 extern uint16_t cpu_illegal_pc;
 
+/* TIBoyce-style waitloop skip: set by vic on raster-register busy polls,
+   consumed by both CPU cores' IO-read paths (ends the line batch early) */
+extern uint8_t cpu_warp;
+
 /* diagnostics: BRK executions (runaway code warm-starting BASIC) */
 extern uint16_t cpu_last_brk_pc;
 extern unsigned int cpu_brk_count;

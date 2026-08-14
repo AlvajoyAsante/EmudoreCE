@@ -35,9 +35,10 @@ KINDS = {
     "basic":  ("BAS", 0x2000, 0xA000),
     "kernal": ("KRN", 0x2000, 0xE000),
     "chars":  ("CHR", 0x1000, 0xD000),
+    "cart":   ("CRT", None, 0x0000),
     "dsk":    ("DSK", None, 0),
 }
-KIND_INDEX = {"basic": 0, "kernal": 1, "chars": 2, "dsk": 3}
+KIND_INDEX = {"basic": 0, "kernal": 1, "chars": 2, "cart": 3, "dsk": 4}
 
 
 def validate_rom(data: bytes, kind: str) -> None:

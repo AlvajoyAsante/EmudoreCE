@@ -25,6 +25,8 @@ extern uint8_t vic_bad_mode;
 typedef struct
 {
     uint8_t cr1, cr2, mem_ptrs, border, bg0, mode, sprite_en, irq_en;
+    uint8_t spr_dh, spr_dw, spr_prio, spr_mc;
+    uint8_t spr_x[8], spr_y[8], spr_msbx;
     uint16_t screen_mem, char_mem, bitmap_mem, vic_base;
     int raster_irq;
 } VicDebug;
@@ -32,6 +34,16 @@ void vic_debug_snapshot(VicDebug *d);
 
 /* ask for the next frame to be rendered (used on keyboard activity) */
 void vic_request_render(void);
+
+/* lazy rendering: draw pending raster lines with the current register state
+   (called before display-affecting VIC writes and CIA2 bank switches) */
+void vic_render_catchup(void);
+
+/* rolling sprite/control write trace for multiplexer diagnosis */
+#define VIC_WTRACE_MAX 64
+typedef struct { uint16_t line; uint8_t reg, val; } VicWriteTrace;
+extern VicWriteTrace vic_wtrace[VIC_WTRACE_MAX];
+extern uint8_t vic_wtrace_pos;
 
 /* cpu.cycles value at which the next raster line is processed; read by
    c64_run's CPU batching loop */
@@ -42,8 +54,12 @@ extern unsigned int vic_raster_due;
 #define VIC_SCREEN_COLS         504
 #define VIC_VISIBLE_WIDTH       403
 #define VIC_VISIBLE_HEIGHT      284
-#define VIC_FIRST_VISIBLE_LINE  14
-#define VIC_LAST_VISIBLE_LINE   298
+/* Hardware-true PAL geometry: text window (25 rows, yscroll=3) spans raster
+   lines 51-250, so games' raster splits land on the intended picture bands.
+   LCD mapping: fb_y = raster - VIC_FIRST_VISIBLE_LINE, LCD_y = fb_y - IO_CROP_Y
+   keeps the text area centred (20-px letterbox bands). */
+#define VIC_FIRST_VISIBLE_LINE  9
+#define VIC_LAST_VISIBLE_LINE   293
 #define VIC_LINE_CYCLES         63
 #define VIC_BAD_LINE_CYCLES     23
 #define VIC_SPRITE_PTRS_OFFSET  0x3f8
@@ -52,14 +68,15 @@ extern unsigned int vic_raster_due;
 #define VIC_G_RES_Y             200
 #define VIC_G_COLS              40
 #define VIC_G_ROWS              25
-#define VIC_G_FIRST_LINE        56
-#define VIC_G_LAST_LINE         256
+#define VIC_G_FIRST_LINE        51
+#define VIC_G_LAST_LINE         251
 #define VIC_G_FIRST_COL         42
 
 #define VIC_SPRITE_WIDTH        24
 #define VIC_SPRITE_HEIGHT       21
 #define VIC_SPRITE_SIZE         64
-#define VIC_SPRITES_FIRST_LINE  6
-#define VIC_SPRITES_FIRST_COL   18
+/* sprite Y=50/X=24 aligns with the text window top-left (raster 51) */
+#define VIC_SPRITES_FIRST_LINE  1
+#define VIC_SPRITES_FIRST_COL   19
 
 #endif /* EMUDORE_CE_VIC_H */

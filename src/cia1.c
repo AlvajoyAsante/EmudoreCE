@@ -95,7 +95,9 @@ uint8_t cia1_read_register(uint8_t r)
 
     switch (r)
     {
-    case 0x0: break;                                /* PRA read */
+    case 0x0:                                       /* PRA: joy 2 (active low) */
+        retval = (uint8_t)(pra & io_joystick2());
+        break;
     case 0x1:                                       /* PRB: keyboard rows */
         if (pra == 0xff) retval = 0xff;
         else if (pra)

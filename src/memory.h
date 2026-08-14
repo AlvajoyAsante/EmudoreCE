@@ -90,6 +90,8 @@ typedef union
 
 extern uint8_t *mem_ram;
 extern uint8_t *mem_low; /* fast BSS copy of C64 $0000-$0FFF (see memory.c) */
+extern uint8_t mem_color_ram[0x400]; /* dedicated SRAM, distinct from the
+                                        RAM under $D800 like real hardware */
 extern MemPage mem_rd_pg[256];
 extern MemPage mem_wr_pg[256];
 uint8_t mem_read_io(uint16_t addr);

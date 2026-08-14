@@ -3,6 +3,7 @@
  */
 #include "cia2.h"
 #include "cpu.h"
+#include "vic.h"
 #include "util.h"
 
 enum { CIA_MODE_PROCESSOR, CIA_MODE_CNT, CIA_MODE_TIMER_A, CIA_MODE_TIMER_A_CNT };
@@ -50,7 +51,11 @@ void cia2_write_register(uint8_t r, uint8_t v)
 {
     switch (r)
     {
-    case 0x0: pra = v; break;
+    case 0x0:
+        if ((uint8_t)(pra ^ v) & 0x3)
+            vic_render_catchup(); /* VIC bank switch mid-frame */
+        pra = v;
+        break;
     case 0x1: prb = v; break;
     case 0x4: timer_a_latch = (timer_a_latch & 0xff00) | v; break;
     case 0x5: timer_a_latch = (timer_a_latch & 0x00ff) | (v << 8); break;

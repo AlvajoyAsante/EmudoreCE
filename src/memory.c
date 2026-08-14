@@ -21,6 +21,7 @@
 
 uint8_t *mem_ram;
 uint8_t *mem_low;
+uint8_t mem_color_ram[0x400];
 MemPage mem_rd_pg[256];
 MemPage mem_wr_pg[256];
 static uint8_t ram_low[MEM_LOW_SIZE]; /* hot C64 pages $00-$0F in fast RAM */
@@ -35,6 +36,7 @@ void mem_init(void)
     mem_low = ram_low;
     memset(ram_low, 0, sizeof(ram_low));
     memset(mem_ram + MEM_LOW_SIZE, 0, MEM_SIZE - MEM_LOW_SIZE);
+    memset(mem_color_ram, 0, sizeof(mem_color_ram));
     mem_setup_banks(LORAM | HIRAM | CHAREN);
     mem_write_byte_no_io(ADDR_DATA_DIR, 0x2f);
 }
@@ -91,8 +93,23 @@ void mem_setup_banks(uint8_t v)
             mem_rd_pg[i].ptr = rom_kernal - ADDR_KERNAL;
     if (banks[MEM_BANK_CHAREN] == MEM_BANK_IO)
     {
+        /* No SID on the CE: writes land in a bit bucket via the FAST page
+           path (no mem_write_io call per music-player write). Must NOT
+           write through to the RAM underneath (games keep charsets there).
+           Reads stay on the slow path for the OSC3/ENV3 RNG readouts. */
+        static uint8_t sid_bitbucket[0x100];
         for (i = 0xd0; i <= 0xd3; ++i)
             mem_rd_pg[i].ptr = mem_wr_pg[i].ptr = NULL;   /* VIC  */
+        for (i = 0xd4; i <= 0xd7; ++i)
+        {
+            mem_rd_pg[i].ptr = NULL;
+            mem_wr_pg[i].ptr = sid_bitbucket - (i << 8);
+        }
+        for (i = 0xd8; i <= 0xdb; ++i) /* colour RAM = separate SRAM chip */
+        {
+            mem_rd_pg[i].ptr = mem_color_ram - ADDR_COLOR_RAM;
+            mem_wr_pg[i].ptr = mem_color_ram - ADDR_COLOR_RAM;
+        }
         mem_rd_pg[0xdc].ptr = mem_wr_pg[0xdc].ptr = NULL; /* CIA1 */
         mem_rd_pg[0xdd].ptr = mem_wr_pg[0xdd].ptr = NULL; /* CIA2 */
     }
@@ -114,6 +131,16 @@ uint8_t mem_read_io(uint16_t addr)
         return cia1_read_register(addr & 0x0f);
     if (page == ADDR_CIA2_PAGE)
         return cia2_read_register(addr & 0x0f);
+    if (addr >= 0xd400 && addr < 0xd800)
+    {
+        /* no SID: OSC3/ENV3 readouts get a cheap LCG (games use them as
+           an RNG source), everything else reads 0 */
+        static uint8_t sid_rng = 0x5a;
+        uint8_t r = addr & 0x1f;
+        if (r == 0x1b || r == 0x1c)
+            return sid_rng = (uint8_t)(sid_rng * 13 + 7);
+        return 0;
+    }
     /* VIC registers mirror every 64 bytes across $D000-$D3FF */
     return vic_read_register(addr & 0x3f);
 }
@@ -125,6 +152,8 @@ void mem_write_io(uint16_t addr, uint8_t v)
         cia1_write_register(addr & 0x0f, v);
     else if (page == ADDR_CIA2_PAGE)
         cia2_write_register(addr & 0x0f, v);
+    else if (addr >= 0xd400 && addr < 0xd800)
+        ; /* SID write: discard */
     else
         vic_write_register(addr & 0x3f, v);
 }

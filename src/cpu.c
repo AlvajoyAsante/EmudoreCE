@@ -68,10 +68,32 @@ uint16_t cpu_first_brk_ret; /* return address on the 6502 stack at 1st BRK */
 /* always_inline: -Oz outlines these otherwise, adding 1-3 calls per emulated
    instruction in the hottest loop of the program. */
 
+/* Waitloop skip (TIBoyce technique): raster busy-polls and jmp-to-self spins
+   only exit via an external event (raster advance / IRQ), so the rest of the
+   line batch is dead time - warp the cycle counter to the batch end. */
+uint8_t cpu_warp;
+static unsigned int run_until;
+
+__attribute__((__always_inline__))
+static inline void warp_to_batch_end(void)
+{
+    /* until - 1: the instruction's own tick() lands the counter past the
+       batch end, matching the asm core's "countdown = 0" warp exactly */
+    unsigned int target = run_until - 1;
+    if ((int)(target - cpu.cycles) > 0)
+        cpu.cycles = target;
+}
+
 __attribute__((__always_inline__))
 static inline uint8_t load_byte(uint16_t addr)
 {
-    return mem_read_byte(addr);
+    uint8_t v = mem_read_byte(addr);
+    if (cpu_warp)
+    {
+        cpu_warp = 0;
+        warp_to_batch_end();
+    }
+    return v;
 }
 
 /* Stack (page 1) and zero page always live in mem_low: skip the page table
@@ -524,7 +546,14 @@ static void jsr(void)
     tick(6);
 }
 
-static void jmp(void)     { cpu.pc = addr_abs(); tick(3); }
+static void jmp(void)
+{
+    uint16_t t = addr_abs();
+    if (t == (uint16_t)(cpu.pc - 3))
+        warp_to_batch_end(); /* jmp-to-self: only an IRQ exits, skip ahead */
+    cpu.pc = t;
+    tick(3);
+}
 static void jmp_ind(void) { cpu.pc = mem_read_word(addr_abs()); tick(3); }
 static void rts(void)     { cpu.pc = (uint16_t)(pop() + (pop() << 8)) + 1; tick(6); }
 
@@ -878,6 +907,7 @@ static inline bool cpu_step(void)
    (inlining it twice costs ~10 KiB of flash). */
 bool cpu_run(unsigned int until_cycles)
 {
+    run_until = until_cycles;
     if (cpu_asm_ok)
         return cpu_run_asm(until_cycles);
     do
@@ -898,6 +928,7 @@ bool cpu_step_slow(void)
 /* Pure C batch, available regardless of cpu_asm_ok (divergence probe). */
 bool cpu_run_c(unsigned int until_cycles)
 {
+    run_until = until_cycles;
     do
     {
         if (!cpu_step_slow())
@@ -964,7 +995,7 @@ bool cpu_asm_selftest(void)
         0x0A,                   /* 041C ASL A           */
         0x2A,                   /* 041D ROL A           */
         0x48,                   /* 041E PHA             */
-        0x20, 0x50, 0x04,       /* 041F JSR $0450       */
+        0x20, 0xA0, 0x04,       /* 041F JSR $04A0       */
         0x68,                   /* 0422 PLA             */
         0xE6, 0x10,             /* 0423 INC $10         */
         0xC6, 0x11,             /* 0425 DEC $11         */
@@ -981,15 +1012,33 @@ bool cpu_asm_selftest(void)
         0x8D, 0x20, 0xD0,       /* 043C STA $D020 (IO-write C call)        */
         0xAD, 0x20, 0xD0,       /* 043F LDA $D020 (IO-read C call)         */
         0x85, 0x15,             /* 0442 STA $15         */
-        0x4C, 0x44, 0x04        /* 0444 JMP $0444 (spin until budget)      */
+        0x38,                   /* 0444 SEC             */
+        0x08,                   /* 0445 PHP             */
+        0x18,                   /* 0446 CLC             */
+        0x28,                   /* 0447 PLP (carry restored from stack)    */
+        0xA2, 0x02,             /* 0448 LDX #$02        */
+        0xA1, 0x10,             /* 044A LDA ($10,X)     */
+        0x81, 0x10,             /* 044C STA ($10,X)     */
+        0xA2, 0x06,             /* 044E LDX #$06        */
+        0x16, 0x10,             /* 0450 ASL $10,X       */
+        0x1E, 0x00, 0x05,       /* 0452 ASL $0500,X     */
+        0x6C, 0x18, 0x00,       /* 0455 JMP ($0018)     */
+        0xA9, 0x04,             /* 0458 LDA #$04 (RTI target hi)           */
+        0x48,                   /* 045A PHA             */
+        0xA9, 0x62,             /* 045B LDA #$62 (RTI target lo = $0462)   */
+        0x48,                   /* 045D PHA             */
+        0x08,                   /* 045E PHP             */
+        0x40,                   /* 045F RTI             */
+        0xA9, 0xEE,             /* 0460 LDA #$EE (skipped by RTI)          */
+        0x4C, 0x62, 0x04        /* 0462 JMP $0462 (spin until budget)      */
     };
     static const uint8_t sub[] = {
-        0xA9, 0x22,             /* 0450 LDA #$22        */
-        0x85, 0x14,             /* 0452 STA $14         */
-        0x60                    /* 0454 RTS             */
+        0xA9, 0x22,             /* 04A0 LDA #$22        */
+        0x85, 0x14,             /* 04A2 STA $14         */
+        0x60                    /* 04A4 RTS             */
     };
     CpuState ref;
-    uint8_t ref_mem[7];
+    uint8_t ref_mem[8];
     int pass;
     bool ok = true;
 
@@ -997,10 +1046,12 @@ bool cpu_asm_selftest(void)
     {
         memset(mem_low + 0x0400, 0, 0x0200);
         memcpy(mem_low + 0x0400, prog, sizeof(prog));
-        memcpy(mem_low + 0x0450, sub, sizeof(sub));
+        memcpy(mem_low + 0x04A0, sub, sizeof(sub));
         mem_low[0x10] = 0; mem_low[0x11] = 3;
         mem_low[0x12] = 0x00; mem_low[0x13] = 0x05;
         mem_low[0x14] = 0; mem_low[0x15] = 0;
+        mem_low[0x16] = 0x41;                 /* ASL $10,X target */
+        mem_low[0x18] = 0x58; mem_low[0x19] = 0x04; /* JMP ($0018) -> $0458 */
         vic_write_register(0x20, 0); /* deterministic border for readback */
         mem_setup_banks(LORAM | HIRAM | CHAREN);
         memset(&cpu, 0, sizeof(cpu));
@@ -1015,7 +1066,7 @@ bool cpu_asm_selftest(void)
             ref_mem[0] = mem_low[0x10]; ref_mem[1] = mem_low[0x11];
             ref_mem[2] = mem_low[0x14]; ref_mem[3] = mem_low[0x500];
             ref_mem[4] = mem_low[0x506]; ref_mem[5] = mem_low[0x507];
-            ref_mem[6] = mem_low[0x15];
+            ref_mem[6] = mem_low[0x15]; ref_mem[7] = mem_low[0x16];
         }
         else
         {
@@ -1027,7 +1078,7 @@ bool cpu_asm_selftest(void)
                  ref_mem[0] == mem_low[0x10] && ref_mem[1] == mem_low[0x11] &&
                  ref_mem[2] == mem_low[0x14] && ref_mem[3] == mem_low[0x500] &&
                  ref_mem[4] == mem_low[0x506] && ref_mem[5] == mem_low[0x507] &&
-                 ref_mem[6] == mem_low[0x15];
+                 ref_mem[6] == mem_low[0x15] && ref_mem[7] == mem_low[0x16];
         }
     }
 
@@ -1035,6 +1086,7 @@ bool cpu_asm_selftest(void)
     memset(mem_low + 0x0400, 0, 0x0200);
     mem_low[0x10] = mem_low[0x11] = mem_low[0x12] = 0;
     mem_low[0x13] = mem_low[0x14] = mem_low[0x15] = 0;
+    mem_low[0x16] = mem_low[0x18] = mem_low[0x19] = 0;
     vic_write_register(0x20, 0);
     mem_setup_banks(LORAM | HIRAM | CHAREN);
     memset(&cpu, 0, sizeof(cpu));

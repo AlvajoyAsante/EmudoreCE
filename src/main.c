@@ -179,15 +179,16 @@ int main(void)
 
     dbg_printf("[boot] run\n");
     gfx_FillScreen(0); /* boot text must not linger through skipped frames */
+    io_reload_palette(); /* nothing after this may touch the palette */
     c64_run();
 
     if (cpu_illegal_op)
         dbg_printf("[exit] illegal opcode %02x at %04x\n",
                    cpu_illegal_op, cpu_illegal_pc);
-    else if (vic_bad_mode)
-        dbg_printf("[exit] unsupported gfx mode %d\n", vic_bad_mode);
     else
-        dbg_printf("[exit] quit key\n");
+        dbg_printf("[exit] quit key%s\n",
+                   vic_bad_mode ? " (illegal gfx mode seen, rendered black)"
+                                : "");
 
     /* drive/BRK diagnostics gathered during the run */
     {
@@ -219,6 +220,25 @@ int main(void)
                    vd.sprite_en, vd.raster_irq, vd.irq_en);
         dbg_printf("[cpu] pc=%04x $01=%02x $d011-area irqs pending\n",
                    cpu.pc, *mem_host_ptr(1));
+        dbg_printf("[pal] 01=%04x 21=%04x 31=%04x 40=%04x 44=%04x\n",
+                   io_palette_probe(0x01), io_palette_probe(0x21),
+                   io_palette_probe(0x31), io_palette_probe(0x40),
+                   io_palette_probe(0x44));
+        dbg_printf("[spr] en=%02x dh=%02x dw=%02x prio=%02x mc=%02x msbx=%02x\n",
+                   vd.sprite_en, vd.spr_dh, vd.spr_dw, vd.spr_prio,
+                   vd.spr_mc, vd.spr_msbx);
+        for (i = 0; i < 8; ++i)
+            dbg_printf("[spr] #%u x=%u y=%u\n", (unsigned)i,
+                       (unsigned)vd.spr_x[i], (unsigned)vd.spr_y[i]);
+        dbg_printf("[wtrace] last %u VIC writes (line reg val):\n",
+                   (unsigned)VIC_WTRACE_MAX);
+        for (i = 0; i < VIC_WTRACE_MAX; ++i)
+        {
+            const VicWriteTrace *t =
+                &vic_wtrace[(vic_wtrace_pos + i) & (VIC_WTRACE_MAX - 1)];
+            dbg_printf("%3u %02x %02x%c", t->line, t->reg, t->val,
+                       ((i & 3) == 3) ? '\n' : ' ');
+        }
         {
             uint8_t *c = mem_host_ptr(0xc000);
             uint8_t *d = mem_host_ptr(0xd000);
@@ -226,6 +246,27 @@ int main(void)
                        "d000=%02x%02x%02x%02x%02x%02x%02x%02x\n",
                        c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
                        d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+        }
+        {
+            /* sprite pointer table (VIC bank 3, screen $C000) */
+            uint8_t *p = mem_host_ptr(0xc3f8);
+            dbg_printf("[sptr] %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                       p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+        }
+        {
+            /* framebuffer slices through the play area: raw palette indices
+               incl. tag bits (0x20=fg text, 0x10=sprite) */
+            int yy, xx;
+            for (yy = 90; yy <= 130; yy += 20)
+            {
+                uint8_t *r = io_text_row(yy + IO_CROP_Y);
+                if (!r)
+                    continue;
+                dbg_printf("[pix] y=%d ", yy);
+                for (xx = 0; xx < 96; ++xx)
+                    dbg_printf("%02x", r[xx]);
+                dbg_printf("\n");
+            }
         }
     }
 

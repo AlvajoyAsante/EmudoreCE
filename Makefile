@@ -37,6 +37,18 @@ roms:
 	python tools/rom_to_appvar.py assets/roms/kernal.bin --kind kernal --output bin/rom
 	python tools/rom_to_appvar.py assets/roms/characters.901225-01.bin --kind chars --output bin/rom
 
+# Package a cartridge image into ECCRTnn AppVars.
+CART ?=
+.PHONY: cart
+cart:
+	python tools/rom_to_appvar.py "$(CART)" --kind cart --output bin/rom
+
+# Package BASIC listings / PRGs into ECDSKnn AppVars.
+FILES ?= emudore/assets/bas/10print.bas emudore/assets/bas/lowercase.bas emudore/assets/bas/bouncing.bas emudore/assets/prg/monopole.prg
+.PHONY: files
+files:
+	python tools/files_to_dsk_appvar.py $(FILES) --output bin/rom
+
 # Package a .d64 disk image's PRG files into ECDSKnn AppVars (see src/drive.c).
 DISK ?= tests/FINALBLW.D64
 .PHONY: disk

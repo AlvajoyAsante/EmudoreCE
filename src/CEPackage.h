@@ -9,6 +9,7 @@
 #define CE_PACKAGE_BASIC  "BAS"
 #define CE_PACKAGE_KERNAL "KRN"
 #define CE_PACKAGE_CHARS  "CHR"
+#define CE_PACKAGE_CART   "CRT"  /* cartridge image built by tools/rom_to_appvar.py */
 #define CE_PACKAGE_DISK   "DSK"  /* D64 file set built by tools/d64_to_appvar.py */
 
 uint32_t CEPackageSize(const char *packageId);

@@ -8,7 +8,9 @@
  * falls back to the C core one instruction at a time via _cpu_step_slow.
  *
  * Register plan while the core runs:
- *   IY = 6502 PC (upper byte 0), IX = cpu.cycles (24-bit, native width).
+ *   IY = 6502 PC (upper byte 0), IX = cycles REMAINING in the batch minus 1
+ *   (countdown: negative = batch done, so the per-instruction check is a
+ *   sign test instead of a 24-bit compare; cpu.cycles = until - 1 - IX).
  * Both are callee-saved, so C helpers called from here preserve them; the
  * fallback path re-syncs both with the CpuState struct around the call.
  *
@@ -23,6 +25,7 @@
 .extern _mem_write_io
 .extern _mem_setup_banks
 .extern _cpu_step_slow
+.extern _cpu_warp
 
 /* a = code byte at pc, pc++ (no IO check: pc never points at IO) */
 .macro FETCH_A
@@ -67,7 +70,7 @@
 .endm
 
 .macro CYC n
-    ld de, \n
+    ld de, -\n
     add ix, de
 .endm
 
@@ -103,6 +106,15 @@ read_de:
     call _mem_read_io
     pop de
     pop iy
+    ld c, a              ; result; check the waitloop-skip flag from vic
+    ld a, (_cpu_warp)
+    or a, a
+    ld a, c
+    ret z
+    xor a, a
+    ld (_cpu_warp), a
+    ld ix, 0             ; raster busy poll: batch ends after this op
+    ld a, c
     ret
 
 /* mem[de] = (wr_val); preserves de; clobbers hl, bc, a */
@@ -322,7 +334,12 @@ _cpu_run_asm:
     add iy, sp
     ld hl, (iy + 9)          ; until_cycles arg
     ld (until_cyc), hl
-    ld ix, (_cpu + 13)       ; cycles
+    dec hl
+    ld de, (_cpu + 13)       ; ix = until - cycles - 1 (countdown)
+    or a, a
+    sbc hl, de
+    push hl
+    pop ix
     ld a, (_cpu + 0)         ; pc -> iy (top byte 0)
     ld (scr3), a
     ld a, (_cpu + 1)
@@ -334,10 +351,8 @@ _cpu_run_asm:
 main_loop:
     push ix
     pop hl
-    ld de, (until_cyc)
-    or a, a
-    sbc hl, de               ; wrap-safe signed 24-bit compare
-    jp p, run_done
+    add hl, hl               ; carry = countdown sign: batch expired
+    jp c, run_done
     FETCH_A
     ld hl, 0
     ld l, a
@@ -367,7 +382,13 @@ sync_out:                    ; iy/ix -> cpu.pc/cpu.cycles
     ld (_cpu + 0), a
     ld a, (scr3 + 1)
     ld (_cpu + 1), a
-    ld (_cpu + 13), ix
+    ld hl, (until_cyc)       ; cycles = until - 1 - countdown
+    dec hl
+    push ix
+    pop de
+    or a, a
+    sbc hl, de
+    ld (_cpu + 13), hl
     ret
 
 /* fallback: rewind the consumed opcode and run one C step */
@@ -378,7 +399,13 @@ op_fallback:
     call _cpu_step_slow
     or a, a
     jp z, run_fail
-    ld ix, (_cpu + 13)
+    ld hl, (until_cyc)       ; ix = until - cycles - 1 (main_loop re-checks)
+    dec hl
+    ld de, (_cpu + 13)
+    or a, a
+    sbc hl, de
+    push hl
+    pop ix
     ld a, (_cpu + 0)
     ld (scr3), a
     ld a, (_cpu + 1)
@@ -408,9 +435,9 @@ do_branch:
     ld b, a
     ld a, (br_old)
     cp a, b
-    ld de, 1
+    ld de, -1                ; taken +1, page cross +2 (countdown)
     jr z, 2f
-    inc de
+    dec de
 2:  add ix, de
     jp main_loop
 
@@ -1195,9 +1222,14 @@ pla_h:
 
 jmp_h:
     FETCH_DE16
+    lea hl, iy - 3       ; instruction start
+    or a, a
+    sbc hl, de
     push de
     pop iy
-    CYC 3
+    jr nz, 9f
+    ld ix, 0             ; jmp-to-self: only an IRQ exits, end the batch
+9:  CYC 3
     jp main_loop
 
 jsr_h:
@@ -1236,6 +1268,292 @@ nop_h:
     CYC 2
     jp main_loop
 
+/* 6502 P byte from flag bytes -> a; clobbers b */
+flags_pack:
+    ld a, (_cpu + 12)
+    rrca                 ; nf -> bit7
+    ld b, a
+    ld a, (_cpu + 11)
+    rrca
+    rrca                 ; of -> bit6
+    or a, b
+    or a, 0x30           ; brk + unused always set on push
+    ld b, a
+    ld a, (_cpu + 9)
+    add a, a
+    add a, a
+    add a, a             ; dmf -> bit3
+    or a, b
+    ld b, a
+    ld a, (_cpu + 8)
+    add a, a
+    add a, a             ; idf -> bit2
+    or a, b
+    ld b, a
+    ld a, (_cpu + 7)
+    add a, a             ; zf -> bit1
+    or a, b
+    ld b, a
+    ld a, (_cpu + 6)     ; cf -> bit0
+    or a, b
+    ret
+
+/* P byte in c -> flag bytes (bcf untouched, like the C core); clobbers a */
+flags_unpack:
+    ld a, c
+    and a, 1
+    ld (_cpu + 6), a
+    ld a, c
+    rrca
+    and a, 1
+    ld (_cpu + 7), a
+    ld a, c
+    rrca
+    rrca
+    and a, 1
+    ld (_cpu + 8), a
+    ld a, c
+    rrca
+    rrca
+    rrca
+    and a, 1
+    ld (_cpu + 9), a
+    ld a, c
+    rlca
+    rlca
+    and a, 1
+    ld (_cpu + 11), a
+    ld a, c
+    rlca
+    and a, 1
+    ld (_cpu + 12), a
+    ret
+
+php_h:
+    call flags_pack
+    ld b, a
+    call push6502
+    CYC 3
+    jp main_loop
+
+plp_h:
+    call pop6502
+    ld c, a
+    call flags_unpack
+    CYC 4
+    jp main_loop
+
+rti_h:                   ; pull P, then pc lo/hi (no +1, unlike RTS)
+    call pop6502
+    ld c, a
+    call flags_unpack
+    call pop6502
+    ld (op_lo), a
+    call pop6502
+    ld de, 0
+    ld d, a
+    ld a, (op_lo)
+    ld e, a
+    ld (scr3), de
+    xor a, a
+    ld (scr3 + 2), a
+    ld iy, (scr3)
+    CYC 7
+    jp main_loop
+
+jmp_ind_h:
+    FETCH_DE16
+    call read_de         ; pointer lo
+    ld (op_lo), a
+    inc de               ; 16-bit wrap: drop any carry out of bit 15
+    ld (scr3), de
+    xor a, a
+    ld (scr3 + 2), a
+    ld de, (scr3)
+    call read_de         ; pointer hi
+    ld d, a
+    ld a, (op_lo)
+    ld e, a
+    push de
+    pop iy
+    CYC 3
+    jp main_loop
+
+/* de = word at zp (op + X); both zp accesses wrap; clobbers a, b, c, hl */
+.macro LOAD_ADDR_INDX
+    FETCH_A
+    ld b, a
+    ld a, (_cpu + 4)
+    add a, b
+    ld c, a
+    ld de, 0
+    ld e, a
+    ld hl, (_mem_low)
+    add hl, de
+    ld b, (hl)           ; pointer lo
+    inc c                ; 8-bit: (zp+1) & 0xff
+    ld de, 0
+    ld e, c
+    ld hl, (_mem_low)
+    add hl, de
+    ld d, (hl)           ; pointer hi (DEU still 0)
+    ld e, b
+.endm
+
+lda_indx_h:
+    LOAD_ADDR_INDX
+    call read_de
+    ld (_cpu + 3), a
+    SET_NZ
+    CYC 6
+    jp main_loop
+
+sta_indx_h:
+    LOAD_ADDR_INDX
+    ld a, (_cpu + 3)
+    ld (wr_val), a
+    call write_de
+    CYC 6
+    jp main_loop
+
+.macro LOGIC_INDX op
+    LOAD_ADDR_INDX
+    call read_de
+    ld b, a
+    ld a, (_cpu + 3)
+    \op a, b
+    ld (_cpu + 3), a
+    SET_NZ
+    CYC 6
+    jp main_loop
+.endm
+
+ora_indx_h: LOGIC_INDX or
+and_indx_h: LOGIC_INDX and
+eor_indx_h: LOGIC_INDX xor
+
+adc_indx_h:
+    ADCSBC_PRE
+    LOAD_ADDR_INDX
+    call read_de
+    ld b, a
+    call adc_core
+    CYC 6
+    jp main_loop
+sbc_indx_h:
+    ADCSBC_PRE
+    LOAD_ADDR_INDX
+    call read_de
+    ld b, a
+    call sbc_core
+    CYC 6
+    jp main_loop
+cmp_indx_h:
+    LOAD_ADDR_INDX
+    call read_de
+    ld b, a
+    call cmpa_core
+    CYC 6
+    jp main_loop
+
+/* zp,X shift: direct mem_low RMW, keeps the $0001 bank latch */
+.macro RMW_ZPX core
+    FETCH_A
+    ld b, a
+    ld a, (_cpu + 4)
+    add a, b
+    ld c, a
+    ld de, 0
+    ld e, a
+    ld hl, (_mem_low)
+    add hl, de
+    ld a, (hl)
+    push bc
+    push hl
+    call \core
+    pop hl
+    pop bc
+    ld (hl), a
+    CYC 6
+    ld a, c
+    dec a
+    jp nz, main_loop
+    ld a, (hl)
+    ld bc, 0
+    ld c, a
+    push iy
+    push bc
+    call _mem_setup_banks
+    pop bc
+    pop iy
+    jp main_loop
+.endm
+
+asl_zpx_h: RMW_ZPX asl_core
+lsr_zpx_h: RMW_ZPX lsr_core
+rol_zpx_h: RMW_ZPX rol_core
+ror_zpx_h: RMW_ZPX ror_core
+
+.macro SHIFT_ABSI core
+    FETCH_DE16
+    ld a, (_cpu + 4)
+    ld hl, 0
+    ld l, a
+    add hl, de
+    HL16_TO_DE
+    call read_de
+    call \core
+    ld (wr_val), a
+    call write_de
+    CYC 7
+    jp main_loop
+.endm
+
+asl_absx_h: SHIFT_ABSI asl_core
+lsr_absx_h: SHIFT_ABSI lsr_core
+rol_absx_h: SHIFT_ABSI rol_core
+ror_absx_h: SHIFT_ABSI ror_core
+
+inc_zpx_h:
+    FETCH_A
+    ld b, a
+    ld a, (_cpu + 4)
+    add a, b
+    ld c, a
+    ld de, 0
+    ld e, a
+    ld hl, (_mem_low)
+    add hl, de
+    inc (hl)
+    jr .idzpx_done
+dec_zpx_h:
+    FETCH_A
+    ld b, a
+    ld a, (_cpu + 4)
+    add a, b
+    ld c, a
+    ld de, 0
+    ld e, a
+    ld hl, (_mem_low)
+    add hl, de
+    dec (hl)
+.idzpx_done:
+    ld a, (hl)
+    SET_NZ
+    CYC 6
+    ld a, c
+    dec a
+    jp nz, main_loop
+    ld a, (hl)
+    ld bc, 0
+    ld c, a
+    push iy
+    push bc
+    call _mem_setup_banks
+    pop bc
+    pop iy
+    jp main_loop
+
 /* ---- dispatch table (4-byte entries: op << 2) --------------------------- */
 
 .macro OPS a, b, c, d
@@ -1243,39 +1561,39 @@ nop_h:
 .endm
 
 op_table:
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; 00
+    OPS op_fallback, ora_indx_h,  op_fallback, op_fallback  ; 00
     OPS op_fallback, ora_zp_h,    asl_zp_h,    op_fallback  ; 04
-    OPS op_fallback, ora_imm_h,   asl_a_h,     op_fallback  ; 08
+    OPS php_h,       ora_imm_h,   asl_a_h,     op_fallback  ; 08
     OPS op_fallback, ora_abs_h,   asl_abs_h,   op_fallback  ; 0C
     OPS bpl_h,       ora_indy_h,  op_fallback, op_fallback  ; 10
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; 14
+    OPS op_fallback, op_fallback, asl_zpx_h,   op_fallback  ; 14
     OPS clc_h,       ora_absy_h,  op_fallback, op_fallback  ; 18
-    OPS op_fallback, ora_absx_h,  op_fallback, op_fallback  ; 1C
-    OPS jsr_h,       op_fallback, op_fallback, op_fallback  ; 20
+    OPS op_fallback, ora_absx_h,  asl_absx_h,  op_fallback  ; 1C
+    OPS jsr_h,       and_indx_h,  op_fallback, op_fallback  ; 20
     OPS bit_zp_h,    and_zp_h,    rol_zp_h,    op_fallback  ; 24
-    OPS op_fallback, and_imm_h,   rol_a_h,     op_fallback  ; 28
+    OPS plp_h,       and_imm_h,   rol_a_h,     op_fallback  ; 28
     OPS bit_abs_h,   and_abs_h,   rol_abs_h,   op_fallback  ; 2C
     OPS bmi_h,       and_indy_h,  op_fallback, op_fallback  ; 30
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; 34
+    OPS op_fallback, op_fallback, rol_zpx_h,   op_fallback  ; 34
     OPS sec_h,       and_absy_h,  op_fallback, op_fallback  ; 38
-    OPS op_fallback, and_absx_h,  op_fallback, op_fallback  ; 3C
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; 40
+    OPS op_fallback, and_absx_h,  rol_absx_h,  op_fallback  ; 3C
+    OPS rti_h,       eor_indx_h,  op_fallback, op_fallback  ; 40
     OPS op_fallback, eor_zp_h,    lsr_zp_h,    op_fallback  ; 44
     OPS pha_h,       eor_imm_h,   lsr_a_h,     op_fallback  ; 48
     OPS jmp_h,       eor_abs_h,   lsr_abs_h,   op_fallback  ; 4C
     OPS bvc_h,       eor_indy_h,  op_fallback, op_fallback  ; 50
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; 54
+    OPS op_fallback, op_fallback, lsr_zpx_h,   op_fallback  ; 54
     OPS cli_h,       eor_absy_h,  op_fallback, op_fallback  ; 58
-    OPS op_fallback, eor_absx_h,  op_fallback, op_fallback  ; 5C
-    OPS rts_h,       op_fallback, op_fallback, op_fallback  ; 60
+    OPS op_fallback, eor_absx_h,  lsr_absx_h,  op_fallback  ; 5C
+    OPS rts_h,       adc_indx_h,  op_fallback, op_fallback  ; 60
     OPS op_fallback, adc_zp_h,    ror_zp_h,    op_fallback  ; 64
     OPS pla_h,       adc_imm_h,   ror_a_h,     op_fallback  ; 68
-    OPS op_fallback, adc_abs_h,   ror_abs_h,   op_fallback  ; 6C
+    OPS jmp_ind_h,   adc_abs_h,   ror_abs_h,   op_fallback  ; 6C
     OPS bvs_h,       adc_indy_h,  op_fallback, op_fallback  ; 70
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; 74
+    OPS op_fallback, op_fallback, ror_zpx_h,   op_fallback  ; 74
     OPS sei_h,       adc_absy_h,  op_fallback, op_fallback  ; 78
-    OPS op_fallback, adc_absx_h,  op_fallback, op_fallback  ; 7C
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; 80
+    OPS op_fallback, adc_absx_h,  ror_absx_h,  op_fallback  ; 7C
+    OPS op_fallback, sta_indx_h,  op_fallback, op_fallback  ; 80
     OPS sty_zp_h,    sta_zp_h,    stx_zp_h,    op_fallback  ; 84
     OPS dey_h,       op_fallback, txa_h,       op_fallback  ; 88
     OPS sty_abs_h,   sta_abs_h,   stx_abs_h,   op_fallback  ; 8C
@@ -1283,7 +1601,7 @@ op_table:
     OPS op_fallback, sta_zpx_h,   op_fallback, op_fallback  ; 94
     OPS tya_h,       sta_absy_h,  txs_h,       op_fallback  ; 98
     OPS op_fallback, sta_absx_h,  op_fallback, op_fallback  ; 9C
-    OPS ldy_imm_h,   op_fallback, ldx_imm_h,   op_fallback  ; A0
+    OPS ldy_imm_h,   lda_indx_h,  ldx_imm_h,   op_fallback  ; A0
     OPS ldy_zp_h,    lda_zp_h,    ldx_zp_h,    op_fallback  ; A4
     OPS tay_h,       lda_imm_h,   tax_h,       op_fallback  ; A8
     OPS ldy_abs_h,   lda_abs_h,   ldx_abs_h,   op_fallback  ; AC
@@ -1291,20 +1609,20 @@ op_table:
     OPS ldy_zpx_h,   lda_zpx_h,   ldx_zpy_h,   op_fallback  ; B4
     OPS clv_h,       lda_absy_h,  tsx_h,       op_fallback  ; B8
     OPS ldy_absx_h,  lda_absx_h,  ldx_absy_h,  op_fallback  ; BC
-    OPS cpy_imm_h,   op_fallback, op_fallback, op_fallback  ; C0
+    OPS cpy_imm_h,   cmp_indx_h,  op_fallback, op_fallback  ; C0
     OPS cpy_zp_h,    cmp_zp_h,    dec_zp_h,    op_fallback  ; C4
     OPS iny_h,       cmp_imm_h,   dex_h,       op_fallback  ; C8
     OPS cpy_abs_h,   cmp_abs_h,   dec_abs_h,   op_fallback  ; CC
     OPS bne_h,       cmp_indy_h,  op_fallback, op_fallback  ; D0
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; D4
+    OPS op_fallback, op_fallback, dec_zpx_h,   op_fallback  ; D4
     OPS cld_h,       cmp_absy_h,  op_fallback, op_fallback  ; D8
     OPS op_fallback, cmp_absx_h,  dec_absx_h,  op_fallback  ; DC
-    OPS cpx_imm_h,   op_fallback, op_fallback, op_fallback  ; E0
+    OPS cpx_imm_h,   sbc_indx_h,  op_fallback, op_fallback  ; E0
     OPS cpx_zp_h,    sbc_zp_h,    inc_zp_h,    op_fallback  ; E4
     OPS inx_h,       sbc_imm_h,   nop_h,       op_fallback  ; E8
     OPS cpx_abs_h,   sbc_abs_h,   inc_abs_h,   op_fallback  ; EC
     OPS beq_h,       sbc_indy_h,  op_fallback, op_fallback  ; F0
-    OPS op_fallback, op_fallback, op_fallback, op_fallback  ; F4
+    OPS op_fallback, op_fallback, inc_zpx_h,   op_fallback  ; F4
     OPS sed_h,       sbc_absy_h,  op_fallback, op_fallback  ; F8
     OPS op_fallback, sbc_absx_h,  inc_absx_h,  op_fallback  ; FC
 

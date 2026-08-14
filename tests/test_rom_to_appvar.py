@@ -32,6 +32,9 @@ class RomToAppVarTests(unittest.TestCase):
     def test_dsk_kind_accepts_any_size(self):
         validate_rom(bytes(12345), "dsk")
 
+    def test_cart_kind_accepts_any_size(self):
+        validate_rom(bytes(12345), "cart")
+
     def test_chunks_round_trip(self):
         data = bytes(i % 251 for i in range(0x14000))  # 2.5 chunks
 

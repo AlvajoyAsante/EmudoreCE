@@ -33,6 +33,9 @@ static uint8_t sprite_shared_colors[2];
 static uint8_t sprite_colors[8];
 /* collision latches ($D01E/$D01F, cleared on read) */
 static uint8_t sprite_coll_ss, sprite_coll_sb;
+/* stateful sprite display counters (0xff = inactive; see sprite_tick) */
+static uint8_t spr_row[8];
+static uint8_t spr_phase[8];
 /* colors */
 static uint8_t border_color;
 static uint8_t bgcolor[4];
@@ -104,14 +107,14 @@ uint8_t vic_row_asm_selftest(void)
 
     /* multicolor row: same buffers; screen doubles as colour RAM source */
     vic_row_colram = screen;
-    vic_row_bg = IO_SLOT_BG0;
+    vic_row_bg = 6;
     vic_expand_mc_row();
 
     mc_asm_ready = true;
     for (cell = 0; cell < 40 && mc_asm_ready; ++cell)
     {
         uint8_t lut[4];
-        lut[0] = IO_SLOT_BG0;
+        lut[0] = 6;
         lut[1] = screen[cell] >> 4;
         lut[2] = (uint8_t)((screen[cell] & 0x0f) | IO_TAG_FOREGROUND);
         lut[3] = (uint8_t)((screen[cell] & 0x0f) | IO_TAG_FOREGROUND);
@@ -135,6 +138,15 @@ uint8_t vic_row_asm_selftest(void)
 static bool render_frame;
 static bool render_requested; /* set by io on key change: render next frame */
 
+/* Lazy (TIBoyce-style) rendering: lines are NOT drawn as the raster
+   advances. pending_line is the first undrawn line; a display-affecting
+   register write flushes pending..current-1 with the pre-write state, and
+   the frame wrap flushes the rest. Register-stable stripes covering a whole
+   glyph row take the bulk 8-line path. cur_line feeds the renderers (an
+   inlined raster-counter read crashes the ez80 backend, see below). */
+static int pending_line;
+static int cur_line;
+
 void vic_request_render(void)
 {
     render_requested = true;
@@ -143,9 +155,15 @@ void vic_request_render(void)
 /* set when vic_emulate stops on an unsupported mode; reported by main() */
 uint8_t vic_bad_mode;
 
+/* Rolling trace of sprite/control register writes with their raster line:
+   diagnoses multiplexer schedules. Wraps; main() dumps the tail at exit. */
+VicWriteTrace vic_wtrace[VIC_WTRACE_MAX];
+uint8_t vic_wtrace_pos;
+
 /* Cold diagnostics for main(): copy of the display configuration. */
 void vic_debug_snapshot(VicDebug *d)
 {
+    int i;
     d->cr1 = cr1;
     d->cr2 = cr2;
     d->mem_ptrs = mem_pointers;
@@ -153,6 +171,16 @@ void vic_debug_snapshot(VicDebug *d)
     d->bg0 = bgcolor[0];
     d->mode = graphic_mode;
     d->sprite_en = sprite_enabled;
+    d->spr_dh = sprite_double_height;
+    d->spr_dw = sprite_double_width;
+    d->spr_prio = sprite_priority;
+    d->spr_mc = sprite_multicolor;
+    d->spr_msbx = msbx;
+    for (i = 0; i < 8; ++i)
+    {
+        d->spr_x[i] = mx[i];
+        d->spr_y[i] = my[i];
+    }
     d->screen_mem = screen_mem;
     d->char_mem = char_mem;
     d->bitmap_mem = bitmap_mem;
@@ -166,6 +194,7 @@ void vic_reset(void)
     int i;
     raster_irq = raster_c = 0;
     irq_enabled = irq_status = 0;
+    pending_line = cur_line = 0;
     vic_raster_due = VIC_LINE_CYCLES;
     for (i = 0; i < 8; ++i)
         mx[i] = my[i] = sprite_colors[i] = 0;
@@ -173,13 +202,10 @@ void vic_reset(void)
     sprite_enabled = sprite_priority = sprite_multicolor = 0;
     sprite_coll_ss = sprite_coll_sb = 0;
     sprite_shared_colors[0] = sprite_shared_colors[1] = 0;
+    memset(spr_row, 0xff, sizeof(spr_row));
+    memset(spr_phase, 0, sizeof(spr_phase));
     border_color = 0;
     bgcolor[0] = bgcolor[1] = bgcolor[2] = bgcolor[3] = 0;
-    io_set_slot_color(IO_SLOT_BG0, 0);
-    io_set_slot_color(IO_SLOT_BG1, 0);
-    io_set_slot_color(IO_SLOT_BG2, 0);
-    io_set_slot_color(IO_SLOT_BG3, 0);
-    io_set_slot_color(IO_SLOT_BORDER, 0);
     cr1 = cr2 = 0;
     frame_count = 0;
     render_frame = true;
@@ -204,6 +230,9 @@ static void set_raster_counter(int v)
     cr1 |= ((v >> 1) & 0x80);
 }
 
+/* noinline: an inlined read lets the optimizer range-narrow raster math to
+   14-bit adds, which the ez80 backend cannot legalize (compiler crash). */
+__attribute__((noinline))
 static int get_raster_counter(void)
 {
     return raster_c | ((cr1 & 0x80) << 1);
@@ -227,6 +256,7 @@ static bool raster_irq_enabled_fn(void)
 }
 
 static uint8_t horizontal_scroll(void) { return cr2 & 0x7; }
+static uint8_t vertical_scroll(void)   { return cr1 & 0x7; }
 
 static bool is_sprite_enabled(int n)       { return ISSET_BIT(sprite_enabled, n); }
 static bool is_double_width_sprite(int n)  { return ISSET_BIT(sprite_double_width, n); }
@@ -285,9 +315,10 @@ static inline void sprite_pixel_at(int n, bool behind, uint8_t *row, int fx,
 
 static void draw_raster_char_mode(void)
 {
-    int rstr = get_raster_counter();
+    int rstr = cur_line;
     int y = rstr - VIC_FIRST_VISIBLE_LINE;
-    int line = rstr - VIC_G_FIRST_LINE;
+    /* yscroll shifts the text window: default 3 keeps line = rstr - 56 */
+    int line = rstr - (VIC_G_FIRST_LINE - 3) - vertical_scroll();
     int row = line >> 3;
     int char_row = line & 7;
     int xs = horizontal_scroll();
@@ -298,6 +329,11 @@ static void draw_raster_char_mode(void)
 
     if (!dst0)
         return;
+    if (line < 0 || line >= VIC_G_RES_Y)
+    {
+        memset(dst0, bgcolor[0], 320);
+        return;
+    }
 
     /* All source pointers are resolved ONCE per line: screen row and colour
        RAM are contiguous 40-byte runs, and the 2 KiB char generator block is
@@ -306,14 +342,14 @@ static void draw_raster_char_mode(void)
     addr = (uint16_t)(cia2_vic_base_address() +
                       ((screen_mem + row * VIC_G_COLS) & 0x3fff));
     scr = mem_host_ptr((uint16_t)addr);
-    colram = mem_host_ptr((uint16_t)(ADDR_COLOR_RAM + row * VIC_G_COLS));
+    colram = mem_color_ram + row * VIC_G_COLS;
     addr = (uint16_t)(cia2_vic_base_address() + (char_mem & 0x3fff));
     if ((addr >= 0x1000 && addr < 0x2000) || (addr >= 0x9000 && addr < 0xa000))
         chardata = mem_chars_rom_ptr() + (addr & 0x0fff);
     else
         chardata = mem_host_ptr((uint16_t)addr);
 
-    memset(dst0, IO_SLOT_BG0, 320);
+    memset(dst0, bgcolor[0], 320);
 
     /* 38-column mode is NOT narrowed: real VIC renders all 40 columns and
        overlays the border on ~7 edge px, which our LCD crop hides. */
@@ -336,8 +372,8 @@ static void draw_raster_char_mode(void)
 
             if (ecm)
             {
-                /* top 2 char-code bits select the cell background slot */
-                uint8_t cbg = (uint8_t)(IO_SLOT_BG0 + (sc >> 6));
+                /* top 2 char-code bits select the cell background colour */
+                uint8_t cbg = bgcolor[sc >> 6];
                 uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
                 data = chline[(uint16_t)((uint16_t)(sc & 0x3f) << 3)];
                 d[0] = (data & 0x80) ? fg : cbg;
@@ -356,10 +392,10 @@ static void draw_raster_char_mode(void)
                 uint8_t bg2 = (uint8_t)(bgcolor[2] | IO_TAG_FOREGROUND);
                 uint8_t px, v;
                 data = chline[(uint16_t)((uint16_t)sc << 3)];
-                px = (data >> 6) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? IO_SLOT_BG1 : IO_SLOT_BG0; d[0] = d[1] = v;
-                px = (data >> 4) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? IO_SLOT_BG1 : IO_SLOT_BG0; d[2] = d[3] = v;
-                px = (data >> 2) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? IO_SLOT_BG1 : IO_SLOT_BG0; d[4] = d[5] = v;
-                px = data & 3;        v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? IO_SLOT_BG1 : IO_SLOT_BG0; d[6] = d[7] = v;
+                px = (data >> 6) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[0] = d[1] = v;
+                px = (data >> 4) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[2] = d[3] = v;
+                px = (data >> 2) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[4] = d[5] = v;
+                px = data & 3;        v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[6] = d[7] = v;
             }
             else
             {
@@ -384,9 +420,10 @@ static void draw_raster_char_mode(void)
    64000+ calls per frame). */
 static void draw_raster_bitmap_mode(void)
 {
-    int rstr = get_raster_counter();
+    int rstr = cur_line;
     int y = rstr - VIC_FIRST_VISIBLE_LINE;
-    int line = rstr - VIC_G_FIRST_LINE;
+    /* yscroll shifts the display window like in char mode */
+    int line = rstr - (VIC_G_FIRST_LINE - 3) - vertical_scroll();
     int row = line >> 3;
     int xs = horizontal_scroll();
     int c, c0 = 0, c1 = VIC_G_COLS;
@@ -400,13 +437,18 @@ static void draw_raster_bitmap_mode(void)
 
     if (!dst0)
         return;
+    if (line < 0 || line >= VIC_G_RES_Y)
+    {
+        memset(dst0, bgcolor[0], 320);
+        return;
+    }
 
     /* bank base (bits 14-15) and 14-bit offset never overlap: compose with
        OR, all uint16_t (the compiler backend crashes on masked int adds) */
     addr = (uint16_t)(screen_mem + row * VIC_G_COLS);
     addr = (uint16_t)(base | (addr & 0x3fff));
     scr = mem_host_ptr(addr);
-    colram = mem_host_ptr((uint16_t)(ADDR_COLOR_RAM + row * VIC_G_COLS));
+    colram = mem_color_ram + row * VIC_G_COLS;
 
     /* Bitmap line = 40 bytes with stride 8 (313-byte span). Use a direct
        pointer unless the span touches a char-ROM shadow window ($1xxx/$9xxx);
@@ -419,11 +461,11 @@ static void draw_raster_bitmap_mode(void)
     if (win0 != 1 && win0 != 9 && win1 != 1 && win1 != 9)
         bmp = mem_host_ptr(bmp_addr);
 
-    memset(dst0, IO_SLOT_BG0, 320);
+    memset(dst0, bgcolor[0], 320);
 
     /* 38-column mode: render all 40 columns (border overlay is cropped) */
 
-    lut[0] = IO_SLOT_BG0;
+    lut[0] = bgcolor[0];
 
     if (!xs && bmp && hires_asm_enabled)
     {
@@ -442,7 +484,7 @@ static void draw_raster_bitmap_mode(void)
             vic_row_bitmap = bmp;
             vic_row_screen = scr;
             vic_row_colram = colram;
-            vic_row_bg = IO_SLOT_BG0;
+            vic_row_bg = bgcolor[0];
             vic_row_cells = VIC_G_COLS;
             vic_expand_mc_row();
             return;
@@ -499,14 +541,136 @@ static void draw_raster_bitmap_mode(void)
     }
 }
 
+/* Bulk glyph row: when no VIC register changed across a whole 8-line char
+   row, each cell's screen code / colour / mode branch is fetched ONCE and
+   all 8 scanlines are written together (the per-line path refetches them
+   8x). Blank glyph rows (spaces) skip their 8 pixels entirely. */
+__attribute__((noinline))
+static void draw_char_row(int rstr)
+{
+    int y = rstr - VIC_FIRST_VISIBLE_LINE;
+    int line = rstr - (VIC_G_FIRST_LINE - 3) - vertical_scroll();
+    int row = line >> 3;
+    int xs = horizontal_scroll();
+    int c, k;
+    unsigned int addr;
+    const uint8_t *scr, *colram, *chardata;
+    uint8_t *rows[8];
+    bool ecm = (graphic_mode == GM_EXT_BG);
+    bool mcm = (graphic_mode == GM_MC_CHAR);
+
+    for (k = 0; k < 8; ++k)
+    {
+        rows[k] = io_text_row(y + k);
+        if (!rows[k])
+            return;
+        memset(rows[k], bgcolor[0], 320);
+    }
+
+    /* same pointer resolution as the per-line renderer, once per row */
+    addr = (uint16_t)(cia2_vic_base_address() +
+                      ((screen_mem + row * VIC_G_COLS) & 0x3fff));
+    scr = mem_host_ptr((uint16_t)addr);
+    colram = mem_color_ram + row * VIC_G_COLS;
+    addr = (uint16_t)(cia2_vic_base_address() + (char_mem & 0x3fff));
+    if ((addr >= 0x1000 && addr < 0x2000) || (addr >= 0x9000 && addr < 0xa000))
+        chardata = mem_chars_rom_ptr() + (addr & 0x0fff);
+    else
+        chardata = mem_host_ptr((uint16_t)addr);
+
+    for (c = 0; c < VIC_G_COLS; ++c)
+    {
+        uint8_t sc = scr[c];
+        uint8_t color = colram[c] & 0x0f;
+        const uint8_t *chline;
+        unsigned int xoff = ((unsigned int)c << 3) + (unsigned int)xs;
+
+        if (c == VIC_G_COLS - 1 && xs)
+            break; /* scrolled last column would overrun the row */
+
+        if (ecm)
+        {
+            uint8_t cbg = bgcolor[sc >> 6];
+            uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
+            chline = chardata + ((unsigned int)(sc & 0x3f) << 3);
+            for (k = 0; k < 8; ++k)
+            {
+                uint8_t data = chline[k];
+                uint8_t *d = rows[k] + xoff;
+                d[0] = (data & 0x80) ? fg : cbg;
+                d[1] = (data & 0x40) ? fg : cbg;
+                d[2] = (data & 0x20) ? fg : cbg;
+                d[3] = (data & 0x10) ? fg : cbg;
+                d[4] = (data & 0x08) ? fg : cbg;
+                d[5] = (data & 0x04) ? fg : cbg;
+                d[6] = (data & 0x02) ? fg : cbg;
+                d[7] = (data & 0x01) ? fg : cbg;
+            }
+        }
+        else if (mcm && (color & 0x08))
+        {
+            uint8_t mc3 = (uint8_t)((color & 0x07) | IO_TAG_FOREGROUND);
+            uint8_t bg2 = (uint8_t)(bgcolor[2] | IO_TAG_FOREGROUND);
+            chline = chardata + ((unsigned int)sc << 3);
+            for (k = 0; k < 8; ++k)
+            {
+                uint8_t data = chline[k];
+                uint8_t *d;
+                uint8_t px, v;
+                if (!data)
+                    continue; /* all-00 pairs equal the bg0 memset */
+                d = rows[k] + xoff;
+                px = (data >> 6) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[0] = d[1] = v;
+                px = (data >> 4) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[2] = d[3] = v;
+                px = (data >> 2) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[4] = d[5] = v;
+                px = data & 3;        v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[6] = d[7] = v;
+            }
+        }
+        else
+        {
+            uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
+            chline = chardata + ((unsigned int)sc << 3);
+            for (k = 0; k < 8; ++k)
+            {
+                uint8_t data = chline[k];
+                uint8_t *d;
+                if (!data)
+                    continue; /* blank glyph row: bg already memset */
+                d = rows[k] + xoff;
+                if (data & 0x80) d[0] = fg;
+                if (data & 0x40) d[1] = fg;
+                if (data & 0x20) d[2] = fg;
+                if (data & 0x10) d[3] = fg;
+                if (data & 0x08) d[4] = fg;
+                if (data & 0x04) d[5] = fg;
+                if (data & 0x02) d[6] = fg;
+                if (data & 0x01) d[7] = fg;
+            }
+        }
+    }
+}
+
 static void draw_mcsprite(int x, int y, int sprite, int row)
 {
+    /* each 2-bit pair covers 2 pixels, doubled again when X-expanded */
+    int swid = is_double_width_sprite(sprite) ? 2 : 1;
     uint16_t addr = get_sprite_ptr(sprite);
     bool behind = ISSET_BIT(sprite_priority, sprite);
     uint8_t *dst = io_text_row(y);
-    int i, j;
+    int i, j, k;
+    int top_border_offset = 0, btm_border_offset = 0;
+    bool y_in_border;
     if (!dst)
         return;
+
+    if (!ISSET_BIT(cr1, 3))
+    {
+        top_border_offset = 2;
+        btm_border_offset = 4;
+    }
+    y_in_border = (y < VIC_G_FIRST_COL + top_border_offset ||
+                   y >= VIC_G_RES_Y + VIC_G_FIRST_COL - btm_border_offset);
+
     for (i = 0; i < 3; ++i)
     {
         uint8_t data = mem_vic_read_byte(addr + row * 3 + i);
@@ -525,9 +689,19 @@ static void draw_mcsprite(int x, int y, int sprite, int row)
             }
             if (cs != 0)
             {
-                int px = x + i * 8 + 8 - j * 2;
-                sprite_pixel_at(sprite, behind, dst, px, c);
-                sprite_pixel_at(sprite, behind, dst, px + 1, c);
+                /* pair j=3 is the MSB pair = leftmost 2 pixels */
+                int px = x + (i * 8 + (3 - j) * 2) * swid;
+                for (k = 0; k < 2 * swid; ++k)
+                {
+                    if (y_in_border)
+                    {
+                        unsigned int idx = (unsigned int)(px + k - IO_CROP_X);
+                        if (idx < 320)
+                            dst[idx] = border_color;
+                    }
+                    else
+                        sprite_pixel_at(sprite, behind, dst, px + k, c);
+                }
             }
         }
     }
@@ -566,13 +740,14 @@ static void draw_sprite(int x, int y, int sprite, int row)
             {
                 if (ISSET_BIT(data, j))
                 {
-                    int new_x = (x + w + (i * 8 * swid) + (8 * swid) - (j * swid));
+                    /* bit 7 is the leftmost pixel */
+                    int new_x = x + w + (i * 8 + 7 - j) * swid;
 
                     if (y_in_border)
                     {
                         unsigned int idx = (unsigned int)(new_x - IO_CROP_X);
                         if (idx < 320)
-                            dst[idx] = IO_SLOT_BORDER;
+                            dst[idx] = border_color;
                     }
                     else
                         sprite_pixel_at(sprite, behind, dst, new_x,
@@ -583,29 +758,60 @@ static void draw_sprite(int x, int y, int sprite, int row)
     }
 }
 
-static void draw_raster_sprites(void)
+/* Stateful sprite display, like real VIC: a Y match ARMS the sprite, which
+   then shows all 21 rows regardless of later Y rewrites (multiplexers
+   rewrite Y/X for the NEXT strip while the current one still displays). */
+static void sprite_tick(int rstr, bool draw)
 {
-    if (sprite_enabled != 0)
+    int y = rstr - VIC_FIRST_VISIBLE_LINE;
+    uint8_t sp_y = (uint8_t)(rstr - VIC_SPRITES_FIRST_LINE);
+    int n;
+    bool masked = false;
+
+    for (n = 0; n < 8; ++n)
     {
-        int rstr = get_raster_counter();
-        int y = rstr - VIC_FIRST_VISIBLE_LINE;
-        int sp_y = rstr - VIC_SPRITES_FIRST_LINE;
-        int n;
-        memset(sprite_line_mask, 0, sizeof(sprite_line_mask));
-        for (n = 7; n >= 0; --n)
+        if (!is_sprite_enabled(n))
         {
-            int height = is_double_height_sprite(n) ? VIC_SPRITE_HEIGHT * 2 : VIC_SPRITE_HEIGHT;
-            if (is_sprite_enabled(n) && sp_y >= my[n] && sp_y < my[n] + height)
+            spr_row[n] = 0xff;
+            continue;
+        }
+        if (spr_row[n] == 0xff && sp_y == my[n])
+        {
+            spr_row[n] = 0;
+            spr_phase[n] = 0;
+        }
+    }
+
+    for (n = 7; n >= 0; --n)
+    {
+        if (spr_row[n] == 0xff)
+            continue;
+        if (draw)
+        {
+            int x = VIC_SPRITES_FIRST_COL + sprite_x(n);
+            if (!masked)
             {
-                int row = sp_y - my[n];
-                int x = VIC_SPRITES_FIRST_COL + sprite_x(n);
-                if (is_double_height_sprite(n))
-                    row = (sp_y - my[n]) / 2;
-                if (is_multicolor_sprite(n))
-                    draw_mcsprite(x, y, n, row);
-                else
-                    draw_sprite(x, y, n, row);
+                memset(sprite_line_mask, 0, sizeof(sprite_line_mask));
+                masked = true;
             }
+            if (is_multicolor_sprite(n))
+                draw_mcsprite(x, y, n, spr_row[n]);
+            else
+                draw_sprite(x, y, n, spr_row[n]);
+        }
+    }
+
+    for (n = 0; n < 8; ++n)
+    {
+        if (spr_row[n] == 0xff)
+            continue;
+        if (is_double_height_sprite(n) && !spr_phase[n])
+            spr_phase[n] = 1;
+        else
+        {
+            spr_phase[n] = 0;
+            if (++spr_row[n] >= VIC_SPRITE_HEIGHT)
+                spr_row[n] = 0xff;
         }
     }
 }
@@ -626,6 +832,100 @@ static void set_graphic_mode(void)
 
 /* ---- emulation ---------------------------------------------------------- */
 
+/* One raster line, exactly the old per-line vic_emulate body. */
+static void process_line(int rstr)
+{
+    bool visible = (rstr >= VIC_FIRST_VISIBLE_LINE &&
+                    rstr < VIC_LAST_VISIBLE_LINE);
+
+    if (render_frame && visible)
+    {
+        int screen_y = rstr - VIC_FIRST_VISIBLE_LINE;
+        bool text_row = (rstr >= VIC_G_FIRST_LINE &&
+                         rstr < VIC_G_LAST_LINE && !is_screen_off());
+
+        /* Text rows repaint the full 320px themselves; only border rows
+           need the explicit fill. */
+        if (!text_row)
+            io_screen_draw_border(screen_y, border_color);
+        else
+        {
+            switch (graphic_mode)
+            {
+            case GM_CHAR:
+            case GM_MC_CHAR:
+            case GM_EXT_BG:
+                draw_raster_char_mode();
+                break;
+            case GM_BITMAP:
+            case GM_MC_BITMAP:
+                draw_raster_bitmap_mode();
+                break;
+            default:
+            {
+                /* illegal ECM combos: real VIC outputs black, keep going */
+                uint8_t *d = io_text_row(screen_y);
+                vic_bad_mode = graphic_mode;
+                if (d)
+                    memset(d, 0, 320);
+                break;
+            }
+            }
+        }
+    }
+    /* sprite state advances EVERY line (even unrendered frames) so
+       multiplexer arming stays in sync; pixels only when rendering */
+    sprite_tick(rstr, render_frame && visible);
+}
+
+static void flush_lines(int upto)
+{
+    while (pending_line < upto)
+    {
+        int rstr = pending_line;
+
+        if (render_frame && upto - rstr >= 8 && !is_screen_off() &&
+            rstr >= VIC_G_FIRST_LINE && rstr + 7 < VIC_G_LAST_LINE &&
+            (graphic_mode == GM_CHAR || graphic_mode == GM_MC_CHAR ||
+             graphic_mode == GM_EXT_BG))
+        {
+            int line = rstr - (VIC_G_FIRST_LINE - 3) - vertical_scroll();
+            if (line >= 0 && (line & 7) == 0 && line + 7 < VIC_G_RES_Y)
+            {
+                int k;
+                draw_char_row(rstr);
+                for (k = 0; k < 8; ++k)
+                    sprite_tick(rstr + k, true);
+                pending_line = rstr + 8;
+                continue;
+            }
+        }
+        cur_line = rstr;
+        process_line(rstr);
+        pending_line = rstr + 1;
+    }
+}
+
+/* Flush undrawn lines with the CURRENT register state; called before any
+   display-affecting register change (and on VIC bank switches in cia2). */
+void vic_render_catchup(void)
+{
+    flush_lines(get_raster_counter());
+}
+
+/* Separate noinline function: folding this into vic_emulate makes the ez80
+   backend crash legalizing the renderer's masked 14-bit address adds. */
+__attribute__((noinline))
+static void raster_irq_check(void)
+{
+    uint16_t line_now = (uint16_t)get_raster_counter();
+    if (raster_irq_enabled_fn() && line_now == (uint16_t)raster_irq)
+    {
+        irq_status |= (1 << 0);
+        cpu_irq();
+    }
+}
+
 bool vic_emulate(void)
 {
     /* re-raise interrupt if there are unacknowledged ones (inline check of
@@ -638,79 +938,74 @@ bool vic_emulate(void)
     {
         int rstr = get_raster_counter();
 
-        if (raster_irq_enabled_fn() && rstr == raster_irq)
-        {
-            irq_status |= (1 << 0);
-            cpu_irq();
-        }
-
-        if (render_frame &&
-            rstr >= VIC_FIRST_VISIBLE_LINE && rstr < VIC_LAST_VISIBLE_LINE)
-        {
-            int screen_y = rstr - VIC_FIRST_VISIBLE_LINE;
-            bool text_row = (rstr >= VIC_G_FIRST_LINE &&
-                             rstr < VIC_G_LAST_LINE && !is_screen_off());
-
-            /* Text rows repaint the full 320px themselves; only border rows
-               need the explicit fill. */
-            if (!text_row)
-                io_screen_draw_border(screen_y, border_color);
-            else
-            {
-                switch (graphic_mode)
-                {
-                case GM_CHAR:
-                case GM_MC_CHAR:
-                case GM_EXT_BG:
-                    draw_raster_char_mode();
-                    break;
-                case GM_BITMAP:
-                case GM_MC_BITMAP:
-                    draw_raster_bitmap_mode();
-                    break;
-                default:
-                {
-                    /* illegal ECM combos: real VIC outputs black, keep going */
-                    uint8_t *d = io_text_row(screen_y);
-                    vic_bad_mode = graphic_mode;
-                    if (d)
-                        memset(d, 0, 320);
-                    break;
-                }
-                }
-            }
-            draw_raster_sprites();
-        }
+        /* Drawing is DEFERRED (flush_lines): register-stable stripes render
+           in bulk; register writes split the frame exactly where needed. */
 
         vic_raster_due += is_bad_line() ? VIC_BAD_LINE_CYCLES : VIC_LINE_CYCLES;
 
         set_raster_counter(++rstr);
         if (rstr >= VIC_SCREEN_LINES)
         {
+            flush_lines(VIC_SCREEN_LINES);
+            pending_line = 0;
             io_screen_refresh();
             frame_count++;
-            /* Wall-clock frame pacing: render at a steady real-time rate
-               (~12 fps of the shared 32 kHz timer) regardless of how fast
-               the emulation runs; key activity still forces a render. */
+            /* Wall-clock frame pacing (~12 fps of the 32 kHz timer). The
+               render is committed on ALTERNATING emulated frame parity:
+               games blink sprites by toggling them every frame, and a
+               fixed-phase sampler can lock onto the "off" phases, making
+               blinking sprites permanently invisible on the LCD. */
             if (frame_count < 300)
                 render_frame = render_requested || ((frame_count & 15) == 0);
             else
             {
                 static unsigned int last_render_ticks;
+                static bool render_pending;
+                static uint8_t render_parity;
                 unsigned int now = (unsigned int)timer_Get(1);
-                render_frame = render_requested ||
-                               (now - last_render_ticks >= 32768u / 12u);
-                if (render_frame)
+                if (render_requested ||
+                    now - last_render_ticks >= 32768u / 12u)
+                {
+                    render_pending = true;
                     last_render_ticks = now;
+                }
+                render_frame = false;
+                if (render_pending &&
+                    (uint8_t)(frame_count & 1u) == render_parity)
+                {
+                    render_frame = true;
+                    render_pending = false;
+                    render_parity ^= 1;
+                }
             }
             render_requested = false;
             set_raster_counter(0);
         }
+
+        /* Raster IRQ fires at the START of the target line: the handler's
+           register writes (sprite multiplex, scroll splits) run during this
+           line's CPU batch, BEFORE the line is drawn. The previous order
+           delivered every raster IRQ one line late. */
+        raster_irq_check();
     }
     return true;
 }
 
 /* ---- register access ----------------------------------------------------- */
+
+/* TIBoyce-style waitloop skip: a SECOND $D011/$D012 read on the same raster
+   line is a busy poll (loops read 5-10x per line); flag the CPU core to end
+   the line batch instead of spinning through it. First read per line never
+   warps, so one-shot raster reads keep their full line budget. */
+static void raster_poll_check(void)
+{
+    static int poll_key = -1;
+    int key = get_raster_counter() | (int)(frame_count << 9);
+    if (key == poll_key)
+        cpu_warp = 1;
+    else
+        poll_key = key;
+}
 
 uint8_t vic_read_register(uint8_t r)
 {
@@ -725,8 +1020,8 @@ uint8_t vic_read_register(uint8_t r)
     case 0x9: case 0xb: case 0xd: case 0xf:
         retval = my[r >> 1]; break;
     case 0x10: retval = msbx; break;
-    case 0x11: retval = cr1; break;
-    case 0x12: retval = raster_c; break;
+    case 0x11: retval = cr1; raster_poll_check(); break;
+    case 0x12: retval = raster_c; raster_poll_check(); break;
     case 0x15: retval = sprite_enabled; break;
     case 0x16: retval = cr2; break;
     case 0x17: retval = sprite_double_height; break;
@@ -740,9 +1035,14 @@ uint8_t vic_read_register(uint8_t r)
     case 0x1b: retval = sprite_priority; break;
     case 0x1c: retval = sprite_multicolor; break;
     case 0x1d: retval = sprite_double_width; break;
-    /* collision latches clear on read (hardware behaviour) */
-    case 0x1e: retval = sprite_coll_ss; sprite_coll_ss = 0; break;
-    case 0x1f: retval = sprite_coll_sb; sprite_coll_sb = 0; break;
+    /* collision latches clear on read (hardware behaviour); flush pending
+       lines first so collisions from already-executed lines are latched */
+    case 0x1e:
+        vic_render_catchup();
+        retval = sprite_coll_ss; sprite_coll_ss = 0; break;
+    case 0x1f:
+        vic_render_catchup();
+        retval = sprite_coll_sb; sprite_coll_sb = 0; break;
     case 0x20: retval = border_color; break;
     case 0x21: case 0x22: case 0x23: case 0x24:
         retval = bgcolor[r - 0x21]; break;
@@ -760,6 +1060,41 @@ uint8_t vic_read_register(uint8_t r)
 
 void vic_write_register(uint8_t r, uint8_t v)
 {
+    /* lazy rendering: draw already-executed lines with the pre-write state.
+       Idempotent writes skip the flush (games hammer $D011 with the same
+       value every other line) so register-stable stripes stay whole. */
+    switch (r)
+    {
+    case 0x12: case 0x13: case 0x14: case 0x19: case 0x1a:
+    case 0x1e: case 0x1f: /* collision latches ignore writes */
+        break; /* raster target / light pen / IRQ regs: no pixel effect */
+    case 0x11:
+        if (((cr1 ^ v) & 0x7f) != 0)
+            vic_render_catchup();
+        break;
+    case 0x18:
+        if (mem_pointers != (uint8_t)(v | 1))
+            vic_render_catchup();
+        break;
+    default:
+        if (r <= 0x2e &&
+            vic_read_register(r) != ((r >= 0x20) ? (v & 0x0f) : v))
+            vic_render_catchup();
+        break;
+    }
+
+    /* trace sprite Y/X/enable/control/priority/colour writes; $D011 excluded
+       (games hammer it every other line and flood the ring buffer) */
+    if (r <= 0x10 || r == 0x12 || r == 0x15 || r == 0x17 || r == 0x18 ||
+        (r >= 0x1b && r <= 0x1d) || (r >= 0x25 && r <= 0x2e))
+    {
+        VicWriteTrace *t = &vic_wtrace[vic_wtrace_pos];
+        t->line = (uint16_t)get_raster_counter();
+        t->reg = r;
+        t->val = v;
+        vic_wtrace_pos = (uint8_t)((vic_wtrace_pos + 1) & (VIC_WTRACE_MAX - 1));
+    }
+
     switch (r)
     {
     case 0x0: case 0x2: case 0x4: case 0x6:
@@ -794,11 +1129,9 @@ void vic_write_register(uint8_t r, uint8_t v)
     case 0x1d: sprite_double_width = v; break;
     case 0x20:
         border_color = v & 0x0f;
-        io_set_slot_color(IO_SLOT_BORDER, border_color);
         break;
     case 0x21: case 0x22: case 0x23: case 0x24:
         bgcolor[r - 0x21] = v & 0x0f;
-        io_set_slot_color((uint8_t)(IO_SLOT_BG0 + (r - 0x21)), v);
         break;
     case 0x25: case 0x26:
         sprite_shared_colors[r - 0x25] = v & 0x0f; break;

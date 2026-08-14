@@ -32,6 +32,7 @@
 #define CROP_Y IO_CROP_Y
 
 static uint8_t keyboard_matrix[8];
+static uint8_t joystick2 = 0xff;
 static bool quit_requested;
 
 /* Per-row framebuffer pointers (single-buffer mode draws straight into the
@@ -59,6 +60,15 @@ static const uint16_t c64_palette[16] = {
     gfx_RGBTo1555(0xb8, 0xb8, 0xb8)  /* 15 light grey   */
 };
 
+void io_reload_palette(void)
+{
+    int i;
+    /* ALL 256 entries repeat the 16 C64 colours: any framebuffer byte
+       (including tag banks 16-63) displays a legal colour. */
+    for (i = 0; i < 256; ++i)
+        gfx_palette[i] = c64_palette[i & 15];
+}
+
 void io_init(void)
 {
     int i;
@@ -72,16 +82,13 @@ void io_init(void)
     }
     /* C64 entries 0/1 are black/white, same as the boot palette, so the boot
        status text stays readable. Entries 16-63 mirror 0-15 (framebuffer tag
-       bits display identically); 64-68 are the global-colour slots. */
-    for (i = 0; i < 64; ++i)
-        gfx_palette[i] = c64_palette[i & 15];
-    for (i = IO_SLOT_BG0; i <= IO_SLOT_BORDER; ++i)
-        gfx_palette[i] = c64_palette[0];
+       bits display identically). */
+    io_reload_palette();
 }
 
-void io_set_slot_color(uint8_t slot, uint8_t c64_color)
+uint16_t io_palette_probe(uint8_t index)
 {
-    gfx_palette[slot] = c64_palette[c64_color & 15];
+    return gfx_palette[index];
 }
 
 void io_shutdown(void)
@@ -234,13 +241,25 @@ bool io_emulate(void)
             apply_map(digit_map, MAP_COUNT(digit_map));
     }
 
+    /* Joystick port 2: arrows + [2nd] fire (active low). Games poll this
+       through CIA1 $DC00; the keyboard cursor mapping stays active too. */
+    joystick2 = 0xff;
+    if (kb_IsDown(kb_KeyUp))    joystick2 &= (uint8_t)~0x01;
+    if (kb_IsDown(kb_KeyDown))  joystick2 &= (uint8_t)~0x02;
+    if (kb_IsDown(kb_KeyLeft))  joystick2 &= (uint8_t)~0x04;
+    if (kb_IsDown(kb_KeyRight)) joystick2 &= (uint8_t)~0x08;
+    if (kb_IsDown(kb_Key2nd))   joystick2 &= (uint8_t)~0x10;
+
     /* Key state changed -> render the next frame so typing feels instant
        even with aggressive frame skipping. */
     {
         static uint8_t prev_matrix[8];
-        if (memcmp(prev_matrix, keyboard_matrix, sizeof(prev_matrix)))
+        static uint8_t prev_joy;
+        if (memcmp(prev_matrix, keyboard_matrix, sizeof(prev_matrix)) ||
+            prev_joy != joystick2)
         {
             memcpy(prev_matrix, keyboard_matrix, sizeof(prev_matrix));
+            prev_joy = joystick2;
             vic_request_render();
         }
     }
@@ -253,6 +272,11 @@ uint8_t io_keyboard_matrix_row(int col)
     if (col < 0 || col > 7)
         return 0xff;
     return keyboard_matrix[col];
+}
+
+uint8_t io_joystick2(void)
+{
+    return joystick2;
 }
 
 bool io_quit_requested(void)

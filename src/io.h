@@ -38,15 +38,11 @@ uint8_t io_screen_peek(int x, int y);
 #define IO_TAG_FOREGROUND 0x20
 #define IO_TAG_SPRITE     0x10
 
-/* Global-colour palette slots: background pixels are written as these fixed
-   indices, so a $D020-$D024 write recolours the whole screen by updating ONE
-   palette entry instead of repainting VRAM. */
-#define IO_SLOT_BG0    0x40
-#define IO_SLOT_BG1    0x41
-#define IO_SLOT_BG2    0x42
-#define IO_SLOT_BG3    0x43
-#define IO_SLOT_BORDER 0x44
-void io_set_slot_color(uint8_t slot, uint8_t c64_color);
+/* Rewrite all 256 palette entries as the repeating 16-colour C64 pattern;
+   call after any code that may have touched the palette. */
+void io_reload_palette(void);
+/* diagnostic read-back of a palette entry */
+uint16_t io_palette_probe(uint8_t index);
 /* Direct framebuffer pointer for a C64 frame row (NULL if off-screen);
    dst[0] is the first text-area pixel. Used by the fast char renderer. */
 uint8_t *io_text_row(int y);
@@ -55,6 +51,10 @@ void io_screen_refresh(void);
 
 /* CIA1 keyboard matrix column read-back (active-low). */
 uint8_t io_keyboard_matrix_row(int col);
+
+/* Joystick port 2 state (active-low: bit0 up, 1 down, 2 left, 3 right,
+   4 fire). Arrows + [2nd] on the CE keypad. */
+uint8_t io_joystick2(void);
 
 /* Returns true once the user pressed CLEAR to quit. */
 bool io_quit_requested(void);
