@@ -63,10 +63,12 @@ void mem_setup_banks(uint8_t v)
         banks[MEM_BANK_KERNAL] = MEM_BANK_ROM;
     if (loram && hiram)
         banks[MEM_BANK_BASIC] = MEM_BANK_ROM;
-    if (charen && (loram || hiram))
-        banks[MEM_BANK_CHAREN] = MEM_BANK_IO;
-    else if (charen && !loram && !hiram)
+    /* PLA rule: with LORAM=0 and HIRAM=0 the $D000 area is RAM no matter
+       what CHAREN says; char ROM shows only for CHAREN=0 with a ROM in. */
+    if (!loram && !hiram)
         banks[MEM_BANK_CHAREN] = MEM_BANK_RAM;
+    else if (charen)
+        banks[MEM_BANK_CHAREN] = MEM_BANK_IO;
     else
         banks[MEM_BANK_CHAREN] = MEM_BANK_ROM;
 
@@ -96,7 +98,8 @@ void mem_setup_banks(uint8_t v)
     }
     else if (banks[MEM_BANK_CHAREN] == MEM_BANK_ROM)
     {
-        for (i = 0xd0; i <= 0xd3; ++i)
+        /* char ROM covers the whole $D000-$DFFF window in this mode */
+        for (i = 0xd0; i <= 0xdf; ++i)
             mem_rd_pg[i].ptr = rom_chars - ADDR_CHARS;
     }
 

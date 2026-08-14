@@ -31,11 +31,28 @@ extern uint16_t cpu_illegal_pc;
 /* diagnostics: BRK executions (runaway code warm-starting BASIC) */
 extern uint16_t cpu_last_brk_pc;
 extern unsigned int cpu_brk_count;
+extern uint16_t cpu_first_brk_pc;
+extern uint8_t  cpu_first_brk_sp;
+extern uint16_t cpu_first_brk_ret;
 
 void cpu_reset(void);
 /* Execute instructions until cpu.cycles reaches until_cycles (wrap-safe).
    Returns false on an illegal opcode. */
 bool cpu_run(unsigned int until_cycles);
+/* One C-core instruction step; the asm core's fallback bridge. */
+bool cpu_step_slow(void);
+/* Validate the eZ80 hybrid core against the C core (needs mem_init done);
+   enables the asm core only when both produce identical results. */
+bool cpu_asm_selftest(void);
+/* Force the C core (diagnostic override, e.g. MODE held at boot). */
+void cpu_asm_disable(void);
+/* Pure C batch (divergence probe). */
+bool cpu_run_c(unsigned int until_cycles);
+/* Dual-core KERNAL-boot divergence probe (debug builds). */
+void cpu_asm_boot_probe(void (*machine_reset)(void),
+                        void (*report)(unsigned int budget,
+                                       const CpuState *c_state,
+                                       const CpuState *a_state));
 void cpu_irq(void);
 void cpu_nmi(void);
 

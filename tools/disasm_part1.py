@@ -1,27 +1,10 @@
 #!/usr/bin/env python3
-"""Minimal 6502 disassembler for analyzing D64 game loaders."""
+"""Minimal 6502 disassembler for PRGs stored in a D64 image."""
 
+import argparse
 from pathlib import Path
-import sys
 
-SPT = [21] * 17 + [19] * 7 + [18] * 6 + [17] * 5
-
-
-def off(t, s):
-    return (sum(SPT[: t - 1]) + s) * 256
-
-
-def extract(data, t, s):
-    out = bytearray()
-    while t:
-        b = data[off(t, s):][:256]
-        nt, ns = b[0], b[1]
-        if nt == 0:
-            out += b[2:ns + 1]
-            break
-        out += b[2:256]
-        t, s = nt, ns
-    return bytes(out)
+import d64_to_appvar as d64
 
 
 # addressing modes: (size, format)
@@ -102,6 +85,11 @@ _fill()
 
 
 def disasm(mem, base, start, end):
+    if start < base or end > base + len(mem) or start >= end:
+        raise ValueError(
+            f"range ${start:04x}-${end:04x} is outside "
+            f"${base:04x}-${base + len(mem) - 1:04x}"
+        )
     pc = start
     while pc < end:
         i = pc - base
@@ -137,10 +125,25 @@ def disasm(mem, base, start, end):
 
 
 if __name__ == "__main__":
-    data = Path("tests/Rally Driver.d64").read_bytes()
-    part1 = extract(data, 17, 1)[2:]
-    base = 0x18D0
-    for spec in sys.argv[1:] or ["1a4e-1b7f"]:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("ranges", nargs="*", default=["1a4e-1b7f"],
+                        help="inclusive-start/exclusive-end hex range")
+    parser.add_argument("--file", type=int, default=1,
+                        help="zero-based D64 directory entry (default: 1)")
+    parser.add_argument("--disk", type=Path, default=Path("tests/Rally Driver.d64"))
+    args = parser.parse_args()
+
+    data = args.disk.read_bytes()
+    entries = d64.read_directory(data)
+    if not 0 <= args.file < len(entries):
+        raise SystemExit(f"file index must be 0..{len(entries) - 1}")
+    name, track, sector = entries[args.file]
+    prg = d64.extract_file(data, track, sector)
+    base = prg[0] | (prg[1] << 8)
+    program = prg[2:]
+    label = name.replace(bytes([0xa0]), b" ").decode("latin1")
+    print(f"file {args.file}: {label!r}, loaded at ${base:04x}")
+    for spec in args.ranges:
         lo, hi = (int(x, 16) for x in spec.split("-"))
         print(f"\n===== ${lo:04x}-${hi:04x} =====")
-        disasm(part1, base, lo, hi)
+        disasm(program, base, lo, hi)

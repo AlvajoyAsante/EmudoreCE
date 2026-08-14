@@ -18,6 +18,10 @@
 #define C64_ORIGIN_X     0
 #define C64_ORIGIN_Y     0
 
+/* Crop offsets from C64 frame coords to LCD coords (LCD_x = x - IO_CROP_X). */
+#define IO_CROP_X 43
+#define IO_CROP_Y 22
+
 void io_init(void);
 void io_shutdown(void);
 /* Scan the CE keypad and refresh the CIA keyboard matrix + CLEAR exit key. */
@@ -27,6 +31,22 @@ bool io_emulate(void);
 void io_screen_update_pixel(int x, int y, uint8_t color);
 void io_screen_draw_rect(int x, int y, int w, uint8_t color);
 void io_screen_draw_border(int y, uint8_t color);
+/* Framebuffer pixel read-back (0 when off-screen). Pixels carry tag bits
+   (bit5 fg, bit4 sprite); palette entries 16-63 mirror colors 0-15 so tags
+   display identically. */
+uint8_t io_screen_peek(int x, int y);
+#define IO_TAG_FOREGROUND 0x20
+#define IO_TAG_SPRITE     0x10
+
+/* Global-colour palette slots: background pixels are written as these fixed
+   indices, so a $D020-$D024 write recolours the whole screen by updating ONE
+   palette entry instead of repainting VRAM. */
+#define IO_SLOT_BG0    0x40
+#define IO_SLOT_BG1    0x41
+#define IO_SLOT_BG2    0x42
+#define IO_SLOT_BG3    0x43
+#define IO_SLOT_BORDER 0x44
+void io_set_slot_color(uint8_t slot, uint8_t c64_color);
 /* Direct framebuffer pointer for a C64 frame row (NULL if off-screen);
    dst[0] is the first text-area pixel. Used by the fast char renderer. */
 uint8_t *io_text_row(int y);

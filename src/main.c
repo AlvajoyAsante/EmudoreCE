@@ -43,6 +43,39 @@ static void print_centered(const char *s, uint8_t y)
     gfx_PrintStringXY(s, (GFX_LCD_WIDTH - gfx_GetStringWidth(s)) / 2, y);
 }
 
+#ifndef NDEBUG
+/* boot-probe plumbing: reset RAM + chips to a deterministic pre-run state */
+static void probe_reset(void)
+{
+    mem_init();
+    cia1_reset();
+    cia2_reset();
+    vic_reset();
+    cpu_reset();
+}
+
+static void probe_report(unsigned int budget,
+                         const CpuState *c_state, const CpuState *a_state)
+{
+    if (!budget)
+    {
+        dbg_printf("[probe] no divergence up to 30000 cycles\n");
+        return;
+    }
+    dbg_printf("[probe] DIVERGED at budget %u:\n", budget);
+    dbg_printf("[probe]  C : pc=%04x sp=%02x a=%02x x=%02x y=%02x cyc=%u "
+               "c%dz%dn%dv%di%dd%d\n",
+               c_state->pc, c_state->sp, c_state->a, c_state->x, c_state->y,
+               c_state->cycles, c_state->cf, c_state->zf, c_state->nf,
+               c_state->of, c_state->idf, c_state->dmf);
+    dbg_printf("[probe]  ASM: pc=%04x sp=%02x a=%02x x=%02x y=%02x cyc=%u "
+               "c%dz%dn%dv%di%dd%d\n",
+               a_state->pc, a_state->sp, a_state->a, a_state->x, a_state->y,
+               a_state->cycles, a_state->cf, a_state->zf, a_state->nf,
+               a_state->of, a_state->idf, a_state->dmf);
+}
+#endif
+
 int main(void)
 {
     gfx_Begin();
@@ -52,6 +85,13 @@ int main(void)
     gfx_FillScreen(0);
     gfx_SetTextFGColor(1);
     print_centered("emudore CE booting...", 110);
+
+    {
+        uint8_t rows = vic_row_asm_selftest();
+        dbg_printf("[boot] asm rows: hires=%s mc=%s\n",
+                   (rows & 1) ? "OK" : "FAILED",
+                   (rows & 2) ? "OK" : "FAILED");
+    }
 
     /* Validate the three ROM AppVars. bit0=BASIC bit1=KERNAL bit2=CHARGEN. */
     romMask = 0;
@@ -85,6 +125,16 @@ int main(void)
         return 1;
     }
 
+    dbg_printf("[boot] cpu core: %s\n",
+               cpu_asm_selftest() ? "asm (self-test OK)"
+                                  : "C (asm self-test FAILED)");
+    kb_Scan();
+    if (kb_IsDown(kb_KeyMode))
+    {
+        cpu_asm_disable();
+        dbg_printf("[boot] MODE held: forcing C cpu core\n");
+    }
+
     dbg_printf("[boot] load_roms\n");
     if (!c64_boot_roms())
     {
@@ -100,6 +150,12 @@ int main(void)
        did not land where the CPU will fetch them. */
     dbg_printf("[boot] resetvec=%02x%02x\n",
                mem_kernal_rom_ptr()[0x1ffd], mem_kernal_rom_ptr()[0x1ffc]);
+
+#ifndef NDEBUG
+    /* Dual-core boot divergence probe: pinpoints the first opcode where the
+       asm core's architectural state departs from the C core's. */
+    cpu_asm_boot_probe(probe_reset, probe_report);
+#endif
 
     /* Optional disk package (ECDSKnn AppVars): patch the LOAD trap and let
        drive_tick auto-type LOAD"*",8,1 at the READY prompt. */
@@ -140,6 +196,9 @@ int main(void)
                      ? drive_trace_count : DRIVE_TRACE_MAX;
         dbg_printf("[drive] %u traps, %u BRKs (last at %04x)\n",
                    (unsigned)drive_trace_count, cpu_brk_count, cpu_last_brk_pc);
+        if (cpu_brk_count)
+            dbg_printf("[brk] first at %04x sp=%02x stack-ret=%04x\n",
+                       cpu_first_brk_pc, cpu_first_brk_sp, cpu_first_brk_ret);
         for (i = 0; i < n; ++i)
         {
             DriveTrace *t = &drive_trace[i];
@@ -160,6 +219,14 @@ int main(void)
                    vd.sprite_en, vd.raster_irq, vd.irq_en);
         dbg_printf("[cpu] pc=%04x $01=%02x $d011-area irqs pending\n",
                    cpu.pc, *mem_host_ptr(1));
+        {
+            uint8_t *c = mem_host_ptr(0xc000);
+            uint8_t *d = mem_host_ptr(0xd000);
+            dbg_printf("[mem] c000=%02x%02x%02x%02x%02x%02x%02x%02x "
+                       "d000=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                       c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+                       d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+        }
     }
 
     c64_shutdown();

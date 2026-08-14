@@ -25,11 +25,11 @@
 #define LCD_W 320
 #define LCD_H 240
 
-/* Crop offsets inside the 403x284 C64 frame (frame coords -> LCD coords).
-   CROP_X is 43, not VIC_G_FIRST_COL (42), because draw_char emits its first
-   pixel at x+1; CROP_Y = 22 centres the text area (rows 42..241) on the LCD. */
-#define CROP_X        43
-#define CROP_Y        22
+/* Crop offsets live in io.h (IO_CROP_X/IO_CROP_Y): CROP_X is 43, not
+   VIC_G_FIRST_COL (42), because draw_char emits its first pixel at x+1;
+   CROP_Y = 22 centres the text area (rows 42..241) on the LCD. */
+#define CROP_X IO_CROP_X
+#define CROP_Y IO_CROP_Y
 
 static uint8_t keyboard_matrix[8];
 static bool quit_requested;
@@ -71,8 +71,17 @@ void io_init(void)
         row += LCD_W;
     }
     /* C64 entries 0/1 are black/white, same as the boot palette, so the boot
-       status text stays readable. */
-    gfx_SetPalette(c64_palette, sizeof(c64_palette), 0);
+       status text stays readable. Entries 16-63 mirror 0-15 (framebuffer tag
+       bits display identically); 64-68 are the global-colour slots. */
+    for (i = 0; i < 64; ++i)
+        gfx_palette[i] = c64_palette[i & 15];
+    for (i = IO_SLOT_BG0; i <= IO_SLOT_BORDER; ++i)
+        gfx_palette[i] = c64_palette[0];
+}
+
+void io_set_slot_color(uint8_t slot, uint8_t c64_color)
+{
+    gfx_palette[slot] = c64_palette[c64_color & 15];
 }
 
 void io_shutdown(void)
@@ -259,7 +268,16 @@ void io_screen_update_pixel(int x, int y, uint8_t color)
     unsigned int dy = (unsigned int)(y - CROP_Y);
     if (dx >= LCD_W || dy >= LCD_H)
         return;
-    row_ptr[dy][dx] = color & 0x0f;
+    row_ptr[dy][dx] = color & 0x7f;
+}
+
+uint8_t io_screen_peek(int x, int y)
+{
+    unsigned int dx = (unsigned int)(x - CROP_X);
+    unsigned int dy = (unsigned int)(y - CROP_Y);
+    if (dx >= LCD_W || dy >= LCD_H)
+        return 0;
+    return row_ptr[dy][dx];
 }
 
 void io_screen_draw_rect(int x, int y, int w, uint8_t color)

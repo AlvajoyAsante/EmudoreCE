@@ -38,7 +38,7 @@ roms:
 	python tools/rom_to_appvar.py assets/roms/characters.901225-01.bin --kind chars --output bin/rom
 
 # Package a .d64 disk image's PRG files into ECDSKnn AppVars (see src/drive.c).
-DISK ?= tests/Rally Driver.d64
+DISK ?= tests/FINALBLW.D64
 .PHONY: disk
 disk:
 	python tools/d64_to_appvar.py "$(DISK)" --output bin/rom

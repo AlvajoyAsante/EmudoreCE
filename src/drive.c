@@ -7,6 +7,7 @@
  * clobbers frames/return values (see the c64.c lore).
  */
 #include <stdint.h>
+#include <string.h>
 #include "drive.h"
 #include "cpu.h"
 #include "memory.h"
@@ -125,9 +126,10 @@ static const uint8_t *find_entry(uint16_t name_addr, uint8_t name_len)
     return NULL;
 }
 
-/* Copy file bytes from the archived AppVar into C64 RAM, one contiguous
-   chunk run at a time. Writes raw RAM (mem_host_ptr), matching a real LOAD
-   which always lands in RAM regardless of ROM banking. */
+/* Copy file bytes from the archived AppVar into C64 RAM as block copies
+   (memcpy lowers to LDIR), split only at chunk boundaries, the mem_low/
+   mem_ram backing seam at $1000, and the 16-bit address wrap. A real LOAD
+   always lands in RAM regardless of ROM banking. */
 static void disk_copy_to_ram(uint32_t offset, uint16_t addr, uint32_t count)
 {
     while (count)
@@ -140,8 +142,26 @@ static void disk_copy_to_ram(uint32_t offset, uint16_t addr, uint32_t count)
             run = (unsigned int)count;
         offset += run;
         count -= run;
-        while (run--)
-            *mem_host_ptr(addr++) = *src++;
+        while (run)
+        {
+            unsigned int span = run;
+            if (addr < MEM_LOW_SIZE)
+            {
+                unsigned int seam = MEM_LOW_SIZE - addr;
+                if (span > seam)
+                    span = seam;
+            }
+            else
+            {
+                unsigned int wrap = (unsigned int)(0x10000ul - addr);
+                if (span > wrap)
+                    span = wrap;
+            }
+            memcpy(mem_host_ptr(addr), src, span);
+            addr = (uint16_t)(addr + span);
+            src += span;
+            run -= span;
+        }
     }
 }
 
@@ -324,10 +344,29 @@ void drive_tick(void)
     static const uint8_t command[KEYBUF_MAX] = {
         0x4c, 0xcf, 0x22, 0x2a, 0x22, 0x2c, 0x38, 0x2c, 0x31, 0x0d
     };
+    /* RUN + RETURN, typed after a single-file load finishes. */
+    static const uint8_t run_cmd[4] = { 0x52, 0x55, 0x4e, 0x0d };
     uint8_t i;
 
-    if (autostart_done || !disk_size)
+    if (!disk_size)
         return;
+
+    /* Stage 2: after the load, queue RUN so single-file games self-start. */
+    if (autostart_done == 1 && drive_trace_count == 1)
+    {
+        /* Wait until BASIC is back at the READY input loop. */
+        if (mem_low[ZP_BLNSW] != 0 || mem_low[ZP_NDX] != 0)
+            return;
+        for (i = 0; i < 4; ++i)
+            mem_low[ADDR_KEYBUF + i] = run_cmd[i];
+        mem_low[ZP_NDX] = 4;
+        autostart_done = 2;
+        vic_request_render();
+        return;
+    }
+    if (autostart_done)
+        return;
+
     /* Wait for the READY prompt: input loop reached (cursor blink enabled),
        keyboard buffer idle, and a safety margin past the reset. */
     if (vic_frames() < 60 || mem_low[ZP_BLNSW] != 0 || mem_low[ZP_NDX] != 0)

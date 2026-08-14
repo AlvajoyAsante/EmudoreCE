@@ -12,6 +12,8 @@
 
 void vic_reset(void);
 bool vic_emulate(void);
+/* Verifies the eZ80 scanline rows; returns bit0 = hires OK, bit1 = MC OK. */
+uint8_t vic_row_asm_selftest(void);
 void    vic_write_register(uint8_t r, uint8_t v);
 uint8_t vic_read_register(uint8_t r);
 unsigned int vic_frames(void);
