@@ -456,9 +456,10 @@ bool vic_emulate(void)
         {
             io_screen_refresh();
             frame_count++;
-            /* KERNAL boot (~300 frames) only needs occasional refreshes. */
+            /* Keep boot fast, but still allow key-triggered immediate redraws
+               so typing does not feel "stuck" during early frame skipping. */
             if (frame_count < 300)
-                render_frame = ((frame_count & 15) == 0);
+                render_frame = render_requested || ((frame_count & 15) == 0);
             else
                 render_frame = render_requested ||
                                ((frame_count & 1) == 0);

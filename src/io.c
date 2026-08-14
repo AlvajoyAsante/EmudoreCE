@@ -17,6 +17,7 @@
 #include <graphx.h>
 #include <keypadc.h>
 #include <string.h>
+#include <sys/timers.h>
 #include "io.h"
 #include "vic.h"
 #include "util.h"
@@ -197,14 +198,15 @@ static void apply_map(const KeyMap *map, int count)
 
 bool io_emulate(void)
 {
-    /* io_emulate runs once per 8 raster lines, but kb_Scan is a slow
-       hardware scan: only rescan once per emulated video frame. */
-    static unsigned int scanned_frame = (unsigned int)-1;
-    unsigned int frame = vic_frames();
+    /* Rescan the keypad at a real-time 60 Hz (546 ticks of the 32 kHz timer
+       cia1.c runs): matches the KERNAL's real-time IRQ scan rate, so short
+       taps register no matter how slow the emulated frame rate is. */
+    static unsigned int last_scan_ticks;
+    unsigned int now = (unsigned int)timer_Get(1);
 
-    if (frame == scanned_frame)
+    if (now - last_scan_ticks < 546)
         return !quit_requested;
-    scanned_frame = frame;
+    last_scan_ticks = now;
 
     memset(keyboard_matrix, 0xff, sizeof(keyboard_matrix));
     kb_Scan();
