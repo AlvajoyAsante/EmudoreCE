@@ -670,6 +670,8 @@ static void draw_mcsprite(int x, int y, int sprite, int row)
     }
     y_in_border = (y < VIC_G_FIRST_COL + top_border_offset ||
                    y >= VIC_G_RES_Y + VIC_G_FIRST_COL - btm_border_offset);
+    if (y_in_border)
+        return; /* border covers sprites; bands stay their static black */
 
     for (i = 0; i < 3; ++i)
     {
@@ -692,16 +694,7 @@ static void draw_mcsprite(int x, int y, int sprite, int row)
                 /* pair j=3 is the MSB pair = leftmost 2 pixels */
                 int px = x + (i * 8 + (3 - j) * 2) * swid;
                 for (k = 0; k < 2 * swid; ++k)
-                {
-                    if (y_in_border)
-                    {
-                        unsigned int idx = (unsigned int)(px + k - IO_CROP_X);
-                        if (idx < 320)
-                            dst[idx] = border_color;
-                    }
-                    else
-                        sprite_pixel_at(sprite, behind, dst, px + k, c);
-                }
+                    sprite_pixel_at(sprite, behind, dst, px + k, c);
             }
         }
     }
@@ -719,8 +712,8 @@ static void draw_sprite(int x, int y, int sprite, int row)
     if (!dst)
         return;
 
-    /* side borders are cropped off the LCD; only the 24-row top/bottom
-       border still needs the overlay */
+    /* side borders are cropped off the LCD; top/bottom border rows draw
+       nothing at all (border covers sprites, bands stay static black) */
     if (!ISSET_BIT(cr1, 3))
     {
         top_border_offset = 2;
@@ -728,6 +721,8 @@ static void draw_sprite(int x, int y, int sprite, int row)
     }
     y_in_border = (y < VIC_G_FIRST_COL + top_border_offset ||
                    y >= VIC_G_RES_Y + VIC_G_FIRST_COL - btm_border_offset);
+    if (y_in_border)
+        return;
 
     for (w = 0; w < swid; ++w)
     {
@@ -743,15 +738,8 @@ static void draw_sprite(int x, int y, int sprite, int row)
                     /* bit 7 is the leftmost pixel */
                     int new_x = x + w + (i * 8 + 7 - j) * swid;
 
-                    if (y_in_border)
-                    {
-                        unsigned int idx = (unsigned int)(new_x - IO_CROP_X);
-                        if (idx < 320)
-                            dst[idx] = border_color;
-                    }
-                    else
-                        sprite_pixel_at(sprite, behind, dst, new_x,
-                                        sprite_colors[sprite]);
+                    sprite_pixel_at(sprite, behind, dst, new_x,
+                                    sprite_colors[sprite]);
                 }
             }
         }
@@ -835,18 +823,18 @@ static void set_graphic_mode(void)
 /* One raster line, exactly the old per-line vic_emulate body. */
 static void process_line(int rstr)
 {
-    bool visible = (rstr >= VIC_FIRST_VISIBLE_LINE &&
-                    rstr < VIC_LAST_VISIBLE_LINE);
+    /* Pixel work only for the text window (rasters 51-250): the letterbox
+       bands are static black (painted once before c64_run) and lines past
+       the LCD edges are cropped, so every other line skips straight to
+       sprite state upkeep. */
+    bool in_window = (rstr >= VIC_G_FIRST_LINE && rstr < VIC_G_LAST_LINE);
+    bool draw = render_frame && in_window;
 
-    if (render_frame && visible)
+    if (draw)
     {
         int screen_y = rstr - VIC_FIRST_VISIBLE_LINE;
-        bool text_row = (rstr >= VIC_G_FIRST_LINE &&
-                         rstr < VIC_G_LAST_LINE && !is_screen_off());
 
-        /* Text rows repaint the full 320px themselves; only border rows
-           need the explicit fill. */
-        if (!text_row)
+        if (is_screen_off())
             io_screen_draw_border(screen_y, border_color);
         else
         {
@@ -875,14 +863,50 @@ static void process_line(int rstr)
     }
     /* sprite state advances EVERY line (even unrendered frames) so
        multiplexer arming stays in sync; pixels only when rendering */
-    sprite_tick(rstr, render_frame && visible);
+    sprite_tick(rstr, draw);
 }
 
 static void flush_lines(int upto)
 {
+    /* Sprites idle = none enabled and none mid-display: sprite_tick is a
+       no-op for every line, so line spans with no pixel work are skipped
+       wholesale (unrendered frames entirely, border bands on rendered
+       ones). Register writes flush first, so this cannot change mid-span. */
+    bool sprites_idle = (sprite_enabled == 0);
+    if (sprites_idle)
+    {
+        int n;
+        for (n = 0; n < 8; ++n)
+            if (spr_row[n] != 0xff)
+            {
+                sprites_idle = false;
+                break;
+            }
+    }
+    if (sprites_idle && !render_frame)
+    {
+        pending_line = upto;
+        return;
+    }
+
     while (pending_line < upto)
     {
         int rstr = pending_line;
+
+        if (sprites_idle)
+        {
+            if (rstr < VIC_G_FIRST_LINE)
+            {
+                pending_line = upto < VIC_G_FIRST_LINE ? upto
+                                                       : VIC_G_FIRST_LINE;
+                continue;
+            }
+            if (rstr >= VIC_G_LAST_LINE)
+            {
+                pending_line = upto;
+                break;
+            }
+        }
 
         if (render_frame && upto - rstr >= 8 && !is_screen_off() &&
             rstr >= VIC_G_FIRST_LINE && rstr + 7 < VIC_G_LAST_LINE &&
