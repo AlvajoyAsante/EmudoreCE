@@ -87,15 +87,17 @@ static void print_count_line(const char *label, uint8_t value, uint8_t total,
     print_centered(line, y);
 }
 
+/* Returns 0 = quit, 1 = file selected (run it), 2 = boot BASIC without disk. */
 static int show_file_menu(uint8_t romCount, uint8_t fileCount)
 {
     uint8_t selected = 0;
-    uint8_t visible = fileCount < 8 ? fileCount : 8;
+    /* entry 0 = "BASIC (no disk)", entries 1..fileCount = disk files */
+    uint8_t visible = fileCount < 8 ? (uint8_t)(fileCount + 1) : 9;
     uint8_t keyHeld = 0;
     uint8_t redraw = 1;
 
     if (!fileCount)
-        return 1;
+        return 2;
 
     for (;;)
     {
@@ -116,11 +118,20 @@ static int show_file_menu(uint8_t romCount, uint8_t fileCount)
                 char *p = line;
                 const char *src;
 
-                if (!drive_file_name(i, name, sizeof(name)))
-                    continue;
+                if (i == 0)
+                {
+                    name[0] = '\0';
+                    src = "BASIC (no disk)";
+                }
+                else
+                {
+                    if (!drive_file_name((uint8_t)(i - 1), name, sizeof(name)))
+                        continue;
+                    src = name;
+                }
                 *p++ = (i == selected) ? '>' : ' ';
                 *p++ = ' ';
-                for (src = name; *src && (p - line) < (int)sizeof(line) - 1; ++src)
+                for (; *src && (p - line) < (int)sizeof(line) - 1; ++src)
                     *p++ = *src;
                 *p = '\0';
                 gfx_PrintStringXY(line, 16, (uint8_t)(76 + i * 16));
@@ -154,7 +165,9 @@ static int show_file_menu(uint8_t romCount, uint8_t fileCount)
         }
         if (kb_IsDown(kb_KeyEnter))
         {
-            drive_select_file(selected);
+            if (selected == 0)
+                return 2;
+            drive_select_file((uint8_t)(selected - 1));
             return 1;
         }
         keyHeld = 0;
@@ -214,6 +227,7 @@ int main(void)
 
     {
         uint8_t rows = vic_row_asm_selftest();
+        (void)rows; /* only used by dbg_printf, which is empty in NDEBUG */
         dbg_printf("[boot] asm rows: hires=%s mc=%s\n",
                    (rows & 1) ? "OK" : "FAILED",
                    (rows & 2) ? "OK" : "FAILED");
@@ -238,10 +252,16 @@ int main(void)
     }
 
     fileCount = drive_init() ? drive_file_count() : 0;
-    if (fileCount && !show_file_menu(romCount, fileCount))
+    if (fileCount)
     {
-        gfx_End();
-        return 0;
+        int choice = show_file_menu(romCount, fileCount);
+        if (!choice)
+        {
+            gfx_End();
+            return 0;
+        }
+        if (choice == 2)
+            fileCount = 0; /* plain BASIC boot: no KERNAL trap, no autoload */
     }
 
     dbg_printf("[boot] init_io\n");
@@ -338,6 +358,7 @@ int main(void)
         for (i = 0; i < n; ++i)
         {
             DriveTrace *t = &drive_trace[i];
+            (void)t;
             dbg_printf("[drive] #%u from=%04x name='%c%c%c' len=%u sa=%u "
                        "entry=%u addr=%04x end=%04x\n",
                        (unsigned)i, t->caller,
@@ -371,12 +392,14 @@ int main(void)
         {
             const VicWriteTrace *t =
                 &vic_wtrace[(vic_wtrace_pos + i) & (VIC_WTRACE_MAX - 1)];
+            (void)t;
             dbg_printf("%3u %02x %02x%c", t->line, t->reg, t->val,
                        ((i & 3) == 3) ? '\n' : ' ');
         }
         {
             uint8_t *c = mem_host_ptr(0xc000);
             uint8_t *d = mem_host_ptr(0xd000);
+            (void)c; (void)d;
             dbg_printf("[mem] c000=%02x%02x%02x%02x%02x%02x%02x%02x "
                        "d000=%02x%02x%02x%02x%02x%02x%02x%02x\n",
                        c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
@@ -385,6 +408,7 @@ int main(void)
         {
             /* sprite pointer table (VIC bank 3, screen $C000) */
             uint8_t *p = mem_host_ptr(0xc3f8);
+            (void)p;
             dbg_printf("[sptr] %02x %02x %02x %02x %02x %02x %02x %02x\n",
                        p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
         }
