@@ -103,6 +103,10 @@ void c64_init(void)
     c64_mark_ready();
 }
 
+/* Total emulated cycles, accumulated per raster line (cpu.cycles itself is
+   24-bit and wraps every ~17 s). Read by main()'s exit speed report. */
+unsigned long c64_total_cycles;
+
 void c64_run(void)
 {
     /* cpu_run executes a whole raster line's worth of instructions per call;
@@ -110,10 +114,13 @@ void c64_run(void)
        Keypad polling runs every line, but io_emulate itself is wall-clock
        throttled, so this stays cheap while avoiding startup input starvation. */
     unsigned int line = 0;
+    unsigned int last_cycles = cpu.cycles;
     for (;;)
     {
         if (!cpu_run(vic_raster_due))
             return;
+        c64_total_cycles += (unsigned int)(cpu.cycles - last_cycles);
+        last_cycles = cpu.cycles;
         if (!vic_emulate())
             return;
         if (!io_emulate())

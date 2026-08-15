@@ -10,12 +10,48 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/**
+ * Reset the VIC-II to its power-on state.
+ *
+ * Raster timing, control registers, sprite latches and deferred-render state
+ * are all reset so the first visible frame starts from a deterministic base.
+ */
 void vic_reset(void);
+/**
+ * Advance the VIC by one raster line.
+ *
+ * This processes raster timing, IRQ generation, frame completion, sprite
+ * state, and any deferred rendering that must catch up before the next line.
+ *
+ * @return false only when a fatal stop path ends emulation; true otherwise.
+ */
 bool vic_emulate(void);
-/* Verifies the eZ80 scanline rows; returns bit0 = hires OK, bit1 = MC OK. */
+/**
+ * Self-test the optional assembly scanline expanders.
+ *
+ * @return Bitmask with bit0 set when the hires row expander passed and bit1
+ *         set when the multicolor row expander passed.
+ */
 uint8_t vic_row_asm_selftest(void);
+/**
+ * Write one VIC register.
+ *
+ * @param r Register index after VIC mirror folding.
+ * @param v Byte value to write.
+ */
 void    vic_write_register(uint8_t r, uint8_t v);
+/**
+ * Read one VIC register.
+ *
+ * @param r Register index after VIC mirror folding.
+ * @return Current register or latch value as exposed on the CPU bus.
+ */
 uint8_t vic_read_register(uint8_t r);
+/**
+ * Return the number of frames completed since reset.
+ *
+ * @return Monotonic frame counter used by boot hiding and pacing logic.
+ */
 unsigned int vic_frames(void);
 
 /* diagnostics: unsupported graphic mode that stopped vic_emulate */
@@ -24,19 +60,45 @@ extern uint8_t vic_bad_mode;
 /* diagnostics: display configuration snapshot printed by main() at exit */
 typedef struct
 {
+   /* raw control registers and decoded mode snapshot */
     uint8_t cr1, cr2, mem_ptrs, border, bg0, mode, sprite_en, irq_en;
+   /* sprite-wide enable/size/priority/multicolor control */
     uint8_t spr_dh, spr_dw, spr_prio, spr_mc;
+   /* per-sprite positions and shared X MSB bits */
     uint8_t spr_x[8], spr_y[8], spr_msbx;
+   /* decoded memory bases from the current VIC bank state */
     uint16_t screen_mem, char_mem, bitmap_mem, vic_base;
+   /* -1 when disabled, otherwise the programmed raster IRQ line */
     int raster_irq;
 } VicDebug;
+/**
+ * Capture a debug snapshot of the current VIC state.
+ *
+ * @param d Output structure to fill.
+ */
 void vic_debug_snapshot(VicDebug *d);
 
-/* ask for the next frame to be rendered (used on keyboard activity) */
+/** Request that the next frame be rendered even if frame skipping is active. */
 void vic_request_render(void);
+/**
+ * Hide or reveal video output during boot/autoload choreography.
+ *
+ * @param hidden true to suppress visible rendering; false to unhide it.
+ */
+void vic_set_boot_hidden(bool hidden);
+/**
+ * Feed the raster busy-poll detector.
+ *
+ * @param id Stream identifier so different poll sources do not alias.
+ */
+void vic_poll_check(uint8_t id);
 
-/* lazy rendering: draw pending raster lines with the current register state
-   (called before display-affecting VIC writes and CIA2 bank switches) */
+/**
+ * Flush deferred rendering up to the current raster position.
+ *
+ * Call this before display-affecting state changes so already-passed lines are
+ * drawn with the old register state and future lines see the new one.
+ */
 void vic_render_catchup(void);
 
 /* rolling sprite/control write trace for multiplexer diagnosis */

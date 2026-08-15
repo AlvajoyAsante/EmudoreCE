@@ -13,12 +13,14 @@
 
 typedef struct
 {
-    /* registers */
+   /* 6510 programmer-visible registers */
     uint16_t pc;
     uint8_t sp, a, x, y;
-    /* status flags */
+   /* Individual processor status flags, kept split for fast C access:
+      cf carry, zf zero, idf interrupt-disable, dmf decimal mode,
+      bcf break-command shadow, of overflow, nf negative/sign. */
     bool cf, zf, idf, dmf, bcf, of, nf;
-    /* clock */
+   /* Total elapsed CPU cycles modulo the host unsigned int width. */
     unsigned int cycles;
 } CpuState;
 
@@ -39,25 +41,55 @@ extern uint16_t cpu_first_brk_pc;
 extern uint8_t  cpu_first_brk_sp;
 extern uint16_t cpu_first_brk_ret;
 
+/** Reset registers, flags, vectors and runtime diagnostics. */
 void cpu_reset(void);
-/* Execute instructions until cpu.cycles reaches until_cycles (wrap-safe).
-   Returns false on an illegal opcode. */
+/**
+ * Execute CPU work until the requested cycle target is reached.
+ *
+ * The comparison is wrap-safe so callers may pass future deadlines even when
+ * the cycle counter is near overflow.
+ *
+ * @param until_cycles Inclusive cycle target for the current batch.
+ * @return false on an illegal opcode or trap failure; true otherwise.
+ */
 bool cpu_run(unsigned int until_cycles);
-/* One C-core instruction step; the asm core's fallback bridge. */
+/**
+ * Execute one opcode with the portable C core.
+ *
+ * @return false on an illegal opcode or trap failure; true otherwise.
+ */
 bool cpu_step_slow(void);
-/* Validate the eZ80 hybrid core against the C core (needs mem_init done);
-   enables the asm core only when both produce identical results. */
+/**
+ * Self-test the hybrid eZ80 assembly core against the C core.
+ *
+ * @return true when both cores produced identical machine state and the asm
+ *         core is now enabled for later cpu_run() calls.
+ */
 bool cpu_asm_selftest(void);
-/* Force the C core (diagnostic override, e.g. MODE held at boot). */
+/** Force all future execution through the C core only. */
 void cpu_asm_disable(void);
-/* Pure C batch (divergence probe). */
+/**
+ * Run one CPU batch with the pure C core only.
+ *
+ * @param until_cycles Inclusive cycle target for the batch.
+ * @return false on an illegal opcode or trap failure; true otherwise.
+ */
 bool cpu_run_c(unsigned int until_cycles);
-/* Dual-core KERNAL-boot divergence probe (debug builds). */
+/**
+ * Compare C-core and asm-core execution during KERNAL boot.
+ *
+ * @param machine_reset Callback that restores RAM and chips to a deterministic
+ *        pre-run state before each comparison attempt.
+ * @param report Callback receiving the first divergent budget and both CPU
+ *        states, or a zero budget when no divergence was found.
+ */
 void cpu_asm_boot_probe(void (*machine_reset)(void),
                         void (*report)(unsigned int budget,
                                        const CpuState *c_state,
                                        const CpuState *a_state));
+/** Queue or deliver a maskable IRQ on the emulated 6510. */
 void cpu_irq(void);
+/** Queue or deliver a non-maskable interrupt on the emulated 6510. */
 void cpu_nmi(void);
 
 /* flag helpers used inside the instruction implementations */

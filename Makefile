@@ -50,7 +50,7 @@ files:
 	python tools/files_to_dsk_appvar.py $(FILES) --output bin/rom
 
 # Package a .d64 disk image's PRG files into ECDSKnn AppVars (see src/drive.c).
-DISK ?= tests/FINALBLW.D64
+DISK ?= tests/Rally Driver.d64
 .PHONY: disk
 disk:
 	python tools/d64_to_appvar.py "$(DISK)" --output bin/rom

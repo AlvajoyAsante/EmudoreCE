@@ -16,28 +16,68 @@
 #define DRIVE_TRAP_OPCODE  0x02 /* KERNAL LOAD ($F4A5)                  */
 #define DRIVE_TRAP2_OPCODE 0x12 /* resident game fastloader (signature) */
 
-/* Validates/maps the DSK AppVar package. false = no disk present (fine,
-   the machine just boots to BASIC). */
+/**
+ * Initialize the virtual drive from the DSK AppVar package.
+ *
+ * This validates the packaged D64-derived directory and maps chunk 0 so the
+ * loader can serve PRG data directly from archived storage.
+ *
+ * @return true when a valid disk package is present; false when no disk is
+ *         available, which is still a normal boot-to-BASIC case.
+ */
 bool drive_init(void);
 
-/* Directory helpers for the startup menu. */
+/**
+ * Return how many PRG entries are available in the current disk package.
+ *
+ * @return Directory entry count, or 0 when no disk package was loaded.
+ */
 uint8_t drive_file_count(void);
+/**
+ * Copy one menu-safe filename out of the disk directory.
+ *
+ * @param index Zero-based PRG directory index.
+ * @param buffer Destination text buffer.
+ * @param bufferSize Size of buffer in bytes, including the terminator.
+ * @return Non-zero on success, zero when the index is invalid or the buffer is
+ *         unusable.
+ */
 int drive_file_name(uint8_t index, char *buffer, uint8_t bufferSize);
+/**
+ * Select which directory entry later autoload or trap requests should use.
+ *
+ * @param index Zero-based PRG directory index.
+ */
 void drive_select_file(uint8_t index);
 
-/* Plants the trap opcode at $F4A5 in the loaded KERNAL image. Call after
-   c64_boot_roms() and only when drive_init() succeeded. */
+/**
+ * Patch the loaded KERNAL image to trap LOAD requests.
+ *
+ * Call this only after c64_boot_roms() and only when drive_init() succeeded.
+ */
 void drive_patch_kernal(void);
 
-/* Executes a trapped KERNAL LOAD. Returns false if the trap opcode was
-   fetched anywhere else (treat as an illegal instruction). */
+/**
+ * Service a trapped KERNAL LOAD.
+ *
+ * @return true when the trap was recognized and handled; false when the same
+ *         opcode appeared somewhere else and should be treated as illegal.
+ */
 bool drive_trap_load(void);
 
-/* Executes a trapped resident fastloader call (see drive.c signature). */
+/**
+ * Service a trapped game-specific resident fastloader call.
+ *
+ * @return true when the trap matched the supported signature; false otherwise.
+ */
 bool drive_trap_fastload(void);
 
-/* Auto-types LOAD"*",8,1 into the keyboard buffer once BASIC reaches the
-   READY prompt. Cheap no-op after it has fired; call from the run loop. */
+/**
+ * Advance drive-side background work.
+ *
+ * This mainly watches for the BASIC READY prompt and injects the staged
+ * LOAD/RUN command sequence once the machine is ready to accept it.
+ */
 void drive_tick(void);
 
 /* Diagnostics: every trapped LOAD is recorded here (no dbg_printf allowed

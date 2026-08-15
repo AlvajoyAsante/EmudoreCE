@@ -344,3 +344,37 @@ void io_screen_refresh(void)
 {
     /* Single-buffered, palette loaded once in io_init: nothing to do. */
 }
+
+/* Emulated-frames-per-second overlay (50 = full PAL speed). Counts every
+   VIC frame wrap; the digits reformat once per real second (32 kHz timer 1)
+   and are redrawn after every rendered frame, because the frame repaint
+   erases them. No sprintf (IX-clobber lore). */
+void io_fps_overlay(bool can_draw)
+{
+    static unsigned int last_ticks;
+    static unsigned int frames;
+    static char text[5] = "--";
+    unsigned int now;
+
+    ++frames;
+    now = (unsigned int)timer_Get(1);
+    if (now - last_ticks >= 32768u)
+    {
+        unsigned int fps = frames < 999 ? frames : 999;
+        char *p = text;
+        if (fps >= 100)
+            *p++ = (char)('0' + fps / 100);
+        if (fps >= 10)
+            *p++ = (char)('0' + (fps / 10) % 10);
+        *p++ = (char)('0' + fps % 10);
+        *p = '\0';
+        frames = 0;
+        last_ticks = now;
+    }
+    if (!can_draw)
+        return;
+    gfx_SetTextFGColor(1);        /* white on opaque black, in the top    */
+    gfx_SetTextBGColor(0);        /* letterbox band so it barely overlaps */
+    gfx_SetTextTransparentColor(255);
+    gfx_PrintStringXY(text, LCD_W - gfx_GetStringWidth(text) - 2, 2);
+}

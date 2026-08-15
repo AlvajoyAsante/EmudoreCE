@@ -8,6 +8,7 @@
 #include "cpu.h"
 #include "io.h"
 #include "util.h"
+#include "vic.h"
 
 enum { CIA_MODE_PROCESSOR, CIA_MODE_CNT, CIA_MODE_TIMER_A, CIA_MODE_TIMER_A_CNT };
 enum { CIA_RUN_RESTART, CIA_RUN_ONE_TIME };
@@ -97,8 +98,10 @@ uint8_t cia1_read_register(uint8_t r)
     {
     case 0x0:                                       /* PRA: joy 2 (active low) */
         retval = (uint8_t)(pra & io_joystick2());
+        vic_poll_check(1);
         break;
     case 0x1:                                       /* PRB: keyboard rows */
+        vic_poll_check(2);
         if (pra == 0xff) retval = 0xff;
         else if (pra)
         {

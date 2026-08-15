@@ -1,3 +1,11 @@
+/*
+ * emudore-CE: AppVar package reader used by ROM, cartridge and D64 loading.
+ *
+ * Packages are split into <=32 KiB storage chunks so they fit TI AppVar
+ * limits. This module validates chunk headers, optionally maps archived data
+ * directly, and decompresses LZSS payloads when the emulator needs a flat ROM
+ * image in RAM.
+ */
 #include "CEPackage.h"
 
 #include <fileioc.h>

@@ -18,6 +18,7 @@
 #define D(...) do {} while (0)
 #endif
 
+/* Small readability helper used throughout the register-emulation code. */
 #define ISSET_BIT(v, b) (((v) & (1 << (b))) != 0)
 
 #endif /* EMUDORE_CE_UTIL_H */

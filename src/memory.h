@@ -56,17 +56,41 @@ enum
     MEM_BANK_KERNAL = 6
 };
 
+/**
+ * Initialize the emulated memory backing store.
+ *
+ * RAM pages are pointed at calculator storage, hot low pages are cleared in
+ * BSS, and the default C64 banking configuration is installed.
+ */
 void mem_init(void);
+/**
+ * Shut memory services down.
+ *
+ * This invalidates host pointers so accidental post-shutdown access fails
+ * predictably rather than reading or writing stale calculator memory.
+ */
 void mem_shutdown(void);
+/**
+ * Re-apply the 6510 bank latch and rebuild fast page tables.
+ *
+ * @param v New value written to CPU port $0001.
+ */
 void mem_setup_banks(uint8_t v);
 
-/* non-zero once RAM/RAM backing buffers were allocated */
+/**
+ * Check whether RAM backing is available.
+ *
+ * @return non-zero once mem_init() has installed valid RAM pointers.
+ */
 int mem_ready(void);
 
-/* direct access to the ROM/RAM images, used by the ROM loader */
+/** Direct BASIC ROM backing store at $A000-$BFFF. */
 uint8_t *mem_basic_rom_ptr(void);
+/** Direct KERNAL ROM backing store at $E000-$FFFF. */
 uint8_t *mem_kernal_rom_ptr(void);
+/** Direct character ROM backing store used by CPU/VIC character fetches. */
 uint8_t *mem_chars_rom_ptr(void);
+/** Direct RAM backing store for the full 64 KiB CPU-visible address space. */
 uint8_t *mem_ram_ptr(void);
 
 /* Page-table dispatch: one biased host pointer per 256-byte C64 page
@@ -94,7 +118,19 @@ extern uint8_t mem_color_ram[0x400]; /* dedicated SRAM, distinct from the
                                         RAM under $D800 like real hardware */
 extern MemPage mem_rd_pg[256];
 extern MemPage mem_wr_pg[256];
+/**
+ * Read one byte from an IO-mapped address.
+ *
+ * @param addr CPU-visible address currently resolved to the slow IO path.
+ * @return Byte returned by VIC, CIA, SID stub, or mirrored device space.
+ */
 uint8_t mem_read_io(uint16_t addr);
+/**
+ * Write one byte to an IO-mapped address.
+ *
+ * @param addr CPU-visible address currently resolved to the slow IO path.
+ * @param v Byte value to write.
+ */
 void    mem_write_io(uint16_t addr, uint8_t v);
 
 /* C64 pages $00-$0F (ZP, stack, OS workspace, default screen) live in BSS
@@ -164,10 +200,17 @@ static inline uint16_t mem_read_word_no_io(uint16_t addr)
     return r.w;
 }
 
+/** Write a 16-bit little-endian word through the normal memory path. */
 void mem_write_word(uint16_t addr, uint16_t v);
+/** Write a 16-bit little-endian word assuming the target is not IO-mapped. */
 void mem_write_word_no_io(uint16_t addr, uint16_t v);
 
-/* VIC-II view of memory (always RAM except character ROM windows). */
+/**
+ * Read one byte using the VIC-II view of memory.
+ *
+ * @param addr Address within the current VIC bank.
+ * @return Byte visible to the VIC, including character ROM when applicable.
+ */
 uint8_t  mem_vic_read_byte(uint16_t addr);
 
 #endif /* EMUDORE_CE_MEMORY_H */

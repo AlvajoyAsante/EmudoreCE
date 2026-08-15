@@ -152,6 +152,18 @@ void vic_request_render(void)
     render_requested = true;
 }
 
+/* Hidden boot: suppress all rendering while the KERNAL boots and the disk
+   autoload types LOAD/RUN. drive.c lifts it once the program is running;
+   a frame-cap safety in vic_emulate prevents a permanently black screen. */
+static bool boot_hidden;
+
+void vic_set_boot_hidden(bool hidden)
+{
+    boot_hidden = hidden;
+    if (hidden)
+        render_frame = false;
+}
+
 /* set when vic_emulate stops on an unsupported mode; reported by main() */
 uint8_t vic_bad_mode;
 
@@ -209,6 +221,7 @@ void vic_reset(void)
     cr1 = cr2 = 0;
     frame_count = 0;
     render_frame = true;
+    boot_hidden = false;
     screen_mem = ADDR_SCREEN;
     char_mem = ADDR_CHARS;
     bitmap_mem = ADDR_BITMAP;
@@ -970,6 +983,7 @@ bool vic_emulate(void)
         set_raster_counter(++rstr);
         if (rstr >= VIC_SCREEN_LINES)
         {
+            bool was_rendered = render_frame; /* this frame reached VRAM */
             flush_lines(VIC_SCREEN_LINES);
             pending_line = 0;
             io_screen_refresh();
@@ -1002,7 +1016,14 @@ bool vic_emulate(void)
                     render_parity ^= 1;
                 }
             }
+            if (boot_hidden)
+            {
+                render_frame = false;
+                if (frame_count >= 900) /* autoload never happened: give up */
+                    boot_hidden = false;
+            }
             render_requested = false;
+            io_fps_overlay(was_rendered && !boot_hidden);
             set_raster_counter(0);
         }
 
@@ -1017,18 +1038,26 @@ bool vic_emulate(void)
 
 /* ---- register access ----------------------------------------------------- */
 
-/* TIBoyce-style waitloop skip: a SECOND $D011/$D012 read on the same raster
-   line is a busy poll (loops read 5-10x per line); flag the CPU core to end
-   the line batch instead of spinning through it. First read per line never
-   warps, so one-shot raster reads keep their full line budget. */
-static void raster_poll_check(void)
+/* TIBoyce-style waitloop skip: a SECOND read of the same IO register on the
+   same raster line is a busy poll (loops read 5-10x per line); flag the CPU
+   core to end the line batch instead of spinning through it. First read per
+   line never warps, so one-shot reads keep their full line budget.
+   Streams: 0 = $D011/$D012 raster, 1 = $DC00 joystick, 2 = $DC01 keyboard.
+   Separate keys so unrelated IO reads on one line (an IRQ handler touching
+   CIA and VIC once each) never count as a poll. */
+void vic_poll_check(uint8_t id)
 {
-    static int poll_key = -1;
+    static int poll_key[3] = { -1, -1, -1 };
     int key = get_raster_counter() | (int)(frame_count << 9);
-    if (key == poll_key)
+    if (key == poll_key[id])
         cpu_warp = 1;
     else
-        poll_key = key;
+        poll_key[id] = key;
+}
+
+static void raster_poll_check(void)
+{
+    vic_poll_check(0);
 }
 
 uint8_t vic_read_register(uint8_t r)

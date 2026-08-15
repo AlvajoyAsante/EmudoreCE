@@ -38,6 +38,8 @@ static uint32_t disk_size;       /* 0 = no disk package present */
 static const uint8_t *disk_dir;  /* chunk 0: count byte + directory entries */
 static uint8_t selected_file;
 static uint8_t autostart_done;
+static unsigned int unhide_frame; /* frame at which to lift the hidden boot */
+static bool ready_pc_detect;     /* KERNAL wait-loop bytes verified */
 
 DriveTrace drive_trace[DRIVE_TRACE_MAX];
 uint8_t drive_trace_count;
@@ -108,6 +110,12 @@ void drive_patch_kernal(void)
     uint8_t *k = mem_kernal_rom_ptr();
     if (disk_size && k[0x14a5] == 0x85 && k[0x14a6] == 0x93)
         k[0x14a5] = DRIVE_TRAP_OPCODE;
+    /* $E5CD wait-for-key loop: LDA $C6 / STA $CC / STA $0292 / BEQ $E5CD.
+       If present, drive_tick detects the READY prompt by pc instead of the
+       fixed 60-frame safety wait. */
+    ready_pc_detect = k[0x15cd] == 0xa5 && k[0x15ce] == 0xc6 &&
+                      k[0x15cf] == 0x85 && k[0x15d0] == 0xcc &&
+                      k[0x15d4] == 0xf0 && k[0x15d5] == 0xf7;
 }
 
 static uint32_t read24(const uint8_t *p)
@@ -286,6 +294,7 @@ bool drive_trap_load(void)
         cpu.cf = true;
         do_rts();
         trace_load(name_addr, 0xff, 0, 0);
+        unhide_frame = vic_frames() + 1;
         return true;
     }
 
@@ -314,6 +323,8 @@ bool drive_trap_load(void)
     trace_load(name_addr, (uint8_t)((entry - (disk_dir + 1)) / DIR_ENTRY_SIZE),
                addr, end);
     plant_fastload_trap();
+    /* covers both RUN-typed and $0302-autostart games */
+    unhide_frame = vic_frames() + 12;
     return true;
 }
 
@@ -387,6 +398,13 @@ void drive_tick(void)
     if (!disk_size)
         return;
 
+    if (unhide_frame && (int)(vic_frames() - unhide_frame) >= 0)
+    {
+        unhide_frame = 0;
+        vic_set_boot_hidden(false);
+        vic_request_render();
+    }
+
     /* Stage 2: after the load, queue RUN so single-file games self-start. */
     if (autostart_done == 1 && drive_trace_count == 1)
     {
@@ -403,9 +421,18 @@ void drive_tick(void)
     if (autostart_done)
         return;
 
-    /* Wait for the READY prompt: input loop reached (cursor blink enabled),
-       keyboard buffer idle, and a safety margin past the reset. */
-    if (vic_frames() < 60 || mem_low[ZP_BLNSW] != 0 || mem_low[ZP_NDX] != 0)
+    /* Wait for the READY prompt: keyboard buffer idle and the pc parked in
+       the $E5CD wait-for-key loop (first entered exactly at READY). This
+       replaces the old fixed 60-frame (~1.2M cycle) safety wait; the frame
+       gates remain as fallback for unverified KERNAL images / pc sampling. */
+    if (mem_low[ZP_BLNSW] != 0 || mem_low[ZP_NDX] != 0)
+        return;
+    if (ready_pc_detect)
+    {
+        if ((cpu.pc < 0xe5cd || cpu.pc > 0xe5d5) && vic_frames() < 120)
+            return;
+    }
+    else if (vic_frames() < 60)
         return;
 
     for (i = 0; i < KEYBUF_MAX; ++i)

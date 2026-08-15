@@ -13,6 +13,7 @@
 #include <keypadc.h>
 #include <stdint.h>
 #include <debug.h>
+#include <sys/timers.h>
 
 #include "c64.h"
 #include "cpu.h"
@@ -37,6 +38,10 @@ static const uint16_t bootPalette[] = {
    24-bit address (the 0x7b4c82 / 0x0017 crashes). Keeping it in memory stops
    the compiler from allocating it to a register. */
 static int romMask;
+
+/* Wall-clock ticks (32 kHz timer 1) spent inside c64_run; static for the
+   same IX-register reason as romMask. */
+static unsigned long speed_ticks;
 
 static void print_centered(const char *s, uint8_t y);
 
@@ -334,8 +339,17 @@ int main(void)
 
     dbg_printf("[boot] run\n");
     gfx_FillScreen(0); /* boot text must not linger through skipped frames */
+    if (fileCount)
+    {
+        /* Skip straight to the program: render nothing until the autoload
+           finishes (drive.c lifts the veil ~12 frames after the LOAD). */
+        vic_set_boot_hidden(true);
+        print_centered("loading...", 110);
+    }
     io_reload_palette(); /* nothing after this may touch the palette */
+    speed_ticks = timer_Get(1); /* timer 1 running since cia1_reset */
     c64_run();
+    speed_ticks = timer_Get(1) - speed_ticks;
 
     if (cpu_illegal_op)
         dbg_printf("[exit] illegal opcode %02x at %04x\n",
@@ -344,6 +358,16 @@ int main(void)
         dbg_printf("[exit] quit key%s\n",
                    vic_bad_mode ? " (illegal gfx mode seen, rendered black)"
                                 : "");
+
+    {
+        /* cycles/sec = cycles * 32768 / ticks; PAL C64 = 985248 cyc/s */
+        unsigned long cps = speed_ticks
+            ? (unsigned long)(((uint64_t)c64_total_cycles << 15) / speed_ticks)
+            : 0;
+        (void)cps;
+        dbg_printf("[speed] %lu cyc in %lu ticks = %lu cyc/s (%lu%% of PAL)\n",
+                   c64_total_cycles, speed_ticks, cps, cps / 9852);
+    }
 
     /* drive/BRK diagnostics gathered during the run */
     {

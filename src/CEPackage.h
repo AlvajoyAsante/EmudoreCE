@@ -1,3 +1,10 @@
+/*
+ * emudore-CE: AppVar package reader for ROMs, cartridges and D64 payloads.
+ *
+ * Package chunks are stored as archived TI AppVars named EC<id><nn>. This
+ * module validates headers, optionally maps chunk data directly, and can copy
+ * or decompress payloads into RAM for the emulator core.
+ */
 #ifndef EMUDORE_CE_PACKAGE_H
 #define EMUDORE_CE_PACKAGE_H
 
@@ -12,15 +19,73 @@
 #define CE_PACKAGE_CART   "CRT"  /* cartridge image built by tools/rom_to_appvar.py */
 #define CE_PACKAGE_DISK   "DSK"  /* D64 file set built by tools/d64_to_appvar.py */
 
+/**
+ * Query the unpacked payload size of a package.
+ *
+ * @param packageId Short package identifier such as BAS, KRN, CHR, CRT or DSK.
+ * @return Total logical payload size after decompression, or 0 when the
+ *         package is missing or invalid.
+ */
 uint32_t CEPackageSize(const char *packageId);
+/**
+ * Validate that a package exists and has the expected logical size.
+ *
+ * @param packageId Short package identifier.
+ * @param expectedSize Required unpacked payload size in bytes.
+ * @return Non-zero on success, zero on mismatch or missing data.
+ */
 int CEPackageValidate(const char *packageId, uint32_t expectedSize);
+/**
+ * Map a whole package directly without copying.
+ *
+ * This is only valid for uncompressed packages whose payload layout is already
+ * usable in place.
+ *
+ * @param packageId Short package identifier.
+ * @param expectedSize Required unpacked payload size in bytes.
+ * @return Pointer to the package payload, or NULL on failure.
+ */
 const uint8_t *CEPackageGetDirect(const char *packageId, uint32_t expectedSize);
+/**
+ * Map one raw storage chunk without copying it into RAM.
+ *
+ * @param packageId Short package identifier.
+ * @param chunk Zero-based 32 KiB storage chunk index.
+ * @param expectedSize Required unpacked payload size in bytes.
+ * @return Pointer to the chunk payload bytes, or NULL on failure.
+ */
 const uint8_t *CEPackageGetDirectChunk(const char *packageId, uint8_t chunk,
 									   uint32_t expectedSize);
+/**
+ * Resolve which mapped chunk contains a payload offset.
+ *
+ * @param packageId Short package identifier.
+ * @param offset Byte offset within the logical payload.
+ * @param expectedSize Required unpacked payload size in bytes.
+ * @return Pointer to the raw byte at that offset, or NULL on failure.
+ */
 const uint8_t *CEPackageChunkPtr(const char *packageId, uint32_t offset,
 								 uint32_t expectedSize);
+/** Close any cached direct-mapped AppVar handles held by this module. */
 void CEPackageCloseDirect(void);
+/**
+ * Read a full package into RAM.
+ *
+ * Compressed packages are decompressed; uncompressed packages are copied.
+ *
+ * @param packageId Short package identifier.
+ * @param destination Output buffer receiving the unpacked payload.
+ * @param expectedSize Required unpacked payload size in bytes.
+ * @return Non-zero on success, zero on failure.
+ */
 int CEPackageRead(const char *packageId, uint8_t *destination, uint32_t expectedSize);
+/**
+ * Read one logical payload byte.
+ *
+ * @param packageId Short package identifier.
+ * @param offset Byte offset within the unpacked payload.
+ * @return Byte value 0-255, or a negative value on failure.
+ */
 int CEPackageReadAt(const char *packageId, uint32_t offset);
 
-#endif
+#endif /* EMUDORE_CE_PACKAGE_H */
