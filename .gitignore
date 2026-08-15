@@ -15,4 +15,5 @@
 .DS_Store
 convimg.out
 
+.venv/
 */__pycache__/
