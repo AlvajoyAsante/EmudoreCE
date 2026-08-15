@@ -36,6 +36,7 @@
 
 static uint32_t disk_size;       /* 0 = no disk package present */
 static const uint8_t *disk_dir;  /* chunk 0: count byte + directory entries */
+static uint8_t selected_file;
 static uint8_t autostart_done;
 
 DriveTrace drive_trace[DRIVE_TRACE_MAX];
@@ -45,6 +46,7 @@ bool drive_init(void)
 {
     uint8_t count;
 
+    selected_file = 0xff;
     disk_size = CEPackageSize(CE_PACKAGE_DISK);
     if (!disk_size)
         return false;
@@ -65,6 +67,37 @@ bool drive_init(void)
         return false;
     }
     return true;
+}
+
+uint8_t drive_file_count(void)
+{
+    return disk_dir ? disk_dir[0] : 0;
+}
+
+int drive_file_name(uint8_t index, char *buffer, uint8_t bufferSize)
+{
+    const uint8_t *entry;
+    uint8_t i;
+    uint8_t count = drive_file_count();
+
+    if (!buffer || !bufferSize || index >= count)
+        return 0;
+
+    entry = disk_dir + 1 + (uint32_t)index * DIR_ENTRY_SIZE;
+    for (i = 0; i < DIR_NAME_LEN && i + 1 < bufferSize; ++i)
+    {
+        uint8_t c = entry[i];
+        buffer[i] = (c == 0xa0) ? ' ' : (char)c;
+    }
+    while (i > 0 && buffer[i - 1] == ' ')
+        --i;
+    buffer[i] = '\0';
+    return 1;
+}
+
+void drive_select_file(uint8_t index)
+{
+    selected_file = index < drive_file_count() ? index : 0xff;
 }
 
 void drive_patch_kernal(void)
@@ -119,6 +152,9 @@ static const uint8_t *find_entry(uint16_t name_addr, uint8_t name_len)
     const uint8_t *entry = disk_dir + 1;
     uint8_t count = disk_dir[0];
     uint8_t i;
+
+    if (selected_file < count && name_len == 1 && mem_read_byte(name_addr) == '*')
+        return entry + (uint32_t)selected_file * DIR_ENTRY_SIZE;
 
     for (i = 0; i < count; ++i, entry += DIR_ENTRY_SIZE)
         if (name_matches(entry, name_addr, name_len))

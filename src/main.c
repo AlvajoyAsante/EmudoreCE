@@ -38,6 +38,129 @@ static const uint16_t bootPalette[] = {
    the compiler from allocating it to a register. */
 static int romMask;
 
+static void print_centered(const char *s, uint8_t y);
+
+static uint8_t count_bits(uint8_t value)
+{
+    uint8_t count = 0;
+    while (value)
+    {
+        count += value & 1;
+        value >>= 1;
+    }
+    return count;
+}
+
+static char *append_u8(char *dst, uint8_t value)
+{
+    char digits[3];
+    uint8_t length = 0;
+
+    do
+    {
+        digits[length++] = (char)('0' + (value % 10));
+        value /= 10;
+    }
+    while (value && length < sizeof(digits));
+
+    while (length)
+        *dst++ = digits[--length];
+    return dst;
+}
+
+static void print_count_line(const char *label, uint8_t value, uint8_t total,
+                             uint8_t y)
+{
+    char line[24];
+    char *p = line;
+
+    while (*label)
+        *p++ = *label++;
+    *p++ = ' ';
+    p = append_u8(p, value);
+    if (total)
+    {
+        *p++ = '/';
+        p = append_u8(p, total);
+    }
+    *p = '\0';
+    print_centered(line, y);
+}
+
+static int show_file_menu(uint8_t romCount, uint8_t fileCount)
+{
+    uint8_t selected = 0;
+    uint8_t visible = fileCount < 8 ? fileCount : 8;
+    uint8_t keyHeld = 0;
+    uint8_t redraw = 1;
+
+    if (!fileCount)
+        return 1;
+
+    for (;;)
+    {
+        uint8_t i;
+        char name[17];
+
+        if (redraw)
+        {
+            gfx_FillScreen(0);
+            print_centered("emudore file menu", 12);
+            print_count_line("ROMs", romCount, 3, 28);
+            print_count_line("FILES", fileCount, 0, 40);
+            print_centered("UP/DOWN choose, ENTER load", 54);
+
+            for (i = 0; i < visible; ++i)
+            {
+                char line[20];
+                char *p = line;
+                const char *src;
+
+                if (!drive_file_name(i, name, sizeof(name)))
+                    continue;
+                *p++ = (i == selected) ? '>' : ' ';
+                *p++ = ' ';
+                for (src = name; *src && (p - line) < (int)sizeof(line) - 1; ++src)
+                    *p++ = *src;
+                *p = '\0';
+                gfx_PrintStringXY(line, 16, (uint8_t)(76 + i * 16));
+            }
+
+            redraw = 0;
+        }
+
+        kb_Scan();
+        if (kb_IsDown(kb_KeyClear))
+            return 0;
+        if (kb_IsDown(kb_KeyUp))
+        {
+            if (!keyHeld && selected > 0)
+            {
+                --selected;
+                redraw = 1;
+            }
+            keyHeld = 1;
+            continue;
+        }
+        if (kb_IsDown(kb_KeyDown))
+        {
+            if (!keyHeld && selected + 1 < visible)
+            {
+                ++selected;
+                redraw = 1;
+            }
+            keyHeld = 1;
+            continue;
+        }
+        if (kb_IsDown(kb_KeyEnter))
+        {
+            drive_select_file(selected);
+            return 1;
+        }
+        keyHeld = 0;
+    }
+}
+
 static void print_centered(const char *s, uint8_t y)
 {
     gfx_PrintStringXY(s, (GFX_LCD_WIDTH - gfx_GetStringWidth(s)) / 2, y);
@@ -78,6 +201,9 @@ static void probe_report(unsigned int budget,
 
 int main(void)
 {
+    uint8_t romCount;
+    uint8_t fileCount;
+
     gfx_Begin();
     /* Single-buffered on purpose: the second VRAM half (0xD52C00) holds the
        C64's 64 KiB RAM (see memory.c), so it must never be blitted/drawn. */
@@ -100,6 +226,7 @@ int main(void)
     if (CEPackageValidate(CE_PACKAGE_CHARS, 0x1000))  romMask |= 4;
 
     dbg_printf("[boot] EMUDORE romMask=%d\n", romMask);
+    romCount = count_bits((uint8_t)romMask);
 
     if (romMask != 7)
     {
@@ -108,6 +235,13 @@ int main(void)
             kb_Scan();
         gfx_End();
         return 1;
+    }
+
+    fileCount = drive_init() ? drive_file_count() : 0;
+    if (fileCount && !show_file_menu(romCount, fileCount))
+    {
+        gfx_End();
+        return 0;
     }
 
     dbg_printf("[boot] init_io\n");
@@ -157,9 +291,10 @@ int main(void)
     cpu_asm_boot_probe(probe_reset, probe_report);
 #endif
 
-    /* Optional disk package (ECDSKnn AppVars): patch the LOAD trap and let
-       drive_tick auto-type LOAD"*",8,1 at the READY prompt. */
-    if (drive_init())
+     /* Optional disk package (ECDSKnn AppVars): patch the LOAD trap and let
+         drive_tick auto-type LOAD"*",8,1 at the READY prompt. If a file was
+         chosen in the menu, the loader will resolve the wildcard to that entry. */
+     if (fileCount)
     {
         drive_patch_kernal();
         dbg_printf("[boot] disk appvar found\n");

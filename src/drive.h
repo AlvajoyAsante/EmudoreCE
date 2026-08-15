@@ -20,6 +20,11 @@
    the machine just boots to BASIC). */
 bool drive_init(void);
 
+/* Directory helpers for the startup menu. */
+uint8_t drive_file_count(void);
+int drive_file_name(uint8_t index, char *buffer, uint8_t bufferSize);
+void drive_select_file(uint8_t index);
+
 /* Plants the trap opcode at $F4A5 in the loaded KERNAL image. Call after
    c64_boot_roms() and only when drive_init() succeeded. */
 void drive_patch_kernal(void);
