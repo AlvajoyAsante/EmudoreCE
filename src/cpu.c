@@ -72,6 +72,10 @@ uint16_t cpu_first_brk_ret; /* return address on the 6502 stack at 1st BRK */
    only exit via an external event (raster advance / IRQ), so the rest of the
    line batch is dead time - warp the cycle counter to the batch end. */
 uint8_t cpu_warp;
+
+/* ROM-JIT gate: nonzero when the loaded KERNAL matched the byte patterns
+   the native blocks in cpu_core.s were written against (set by c64.c). */
+uint8_t cpu_jit_kernal;
 static unsigned int run_until;
 
 __attribute__((__always_inline__))
@@ -1030,7 +1034,8 @@ bool cpu_asm_selftest(void)
         0x08,                   /* 045E PHP             */
         0x40,                   /* 045F RTI             */
         0xA9, 0xEE,             /* 0460 LDA #$EE (skipped by RTI)          */
-        0x4C, 0x62, 0x04        /* 0462 JMP $0462 (spin until budget)      */
+        0x24, 0x16,             /* 0462 BIT $16 (lazy-NZ/V split check)    */
+        0x4C, 0x64, 0x04        /* 0464 JMP $0464 (spin until budget)      */
     };
     static const uint8_t sub[] = {
         0xA9, 0x22,             /* 04A0 LDA #$22        */

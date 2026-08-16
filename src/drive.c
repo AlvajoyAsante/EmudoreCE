@@ -102,20 +102,27 @@ void drive_select_file(uint8_t index)
     selected_file = index < drive_file_count() ? index : 0xff;
 }
 
+void drive_disable(void)
+{
+    disk_size = 0; /* no autoload; trapped LOADs answer DEVICE NOT PRESENT */
+}
+
 void drive_patch_kernal(void)
 {
     /* $F4A5 (KERNAL offset $14A5) is STA $93, the first instruction of the
        default ILOAD routine. Verify before patching so a different KERNAL
-       image is left untouched. */
+       image is left untouched. Planted even with no disk: the trap then
+       answers DEVICE NOT PRESENT instantly instead of hanging for minutes
+       in the KERNAL's IEC delay loops with nothing on the bus. */
     uint8_t *k = mem_kernal_rom_ptr();
-    if (disk_size && k[0x14a5] == 0x85 && k[0x14a6] == 0x93)
+    if (k[0x14a5] == 0x85 && k[0x14a6] == 0x93)
         k[0x14a5] = DRIVE_TRAP_OPCODE;
     /* $E5CD wait-for-key loop: LDA $C6 / STA $CC / STA $0292 / BEQ $E5CD.
        If present, drive_tick detects the READY prompt by pc instead of the
-       fixed 60-frame safety wait. */
-    ready_pc_detect = k[0x15cd] == 0xa5 && k[0x15ce] == 0xc6 &&
-                      k[0x15cf] == 0x85 && k[0x15d0] == 0xcc &&
-                      k[0x15d4] == 0xf0 && k[0x15d5] == 0xf7;
+       fixed 60-frame safety wait. ($E5CD - $E000 = offset $05CD.) */
+    ready_pc_detect = k[0x05cd] == 0xa5 && k[0x05ce] == 0xc6 &&
+                      k[0x05cf] == 0x85 && k[0x05d0] == 0xcc &&
+                      k[0x05d4] == 0xf0 && k[0x05d5] == 0xf7;
 }
 
 static uint32_t read24(const uint8_t *p)
@@ -278,10 +285,19 @@ bool drive_trap_load(void)
 
     /* Only honour the trap when it was fetched from the patched KERNAL at
        $F4A5 (pc already advanced past the opcode) with the ROM banked in. */
-    if (cpu.pc != 0xf4a6 || !disk_size ||
+    if (cpu.pc != 0xf4a6 ||
         mem_rd_pg[0xf4].ptr == NULL ||
         mem_rd_pg[0xf4].ptr[0xf4a5] != DRIVE_TRAP_OPCODE)
         return false;
+
+    if (!disk_size)
+    {
+        mem_low[ZP_STATUS] = 0;
+        cpu.a = 5; /* DEVICE NOT PRESENT, without the IEC timeout crawl */
+        cpu.cf = true;
+        do_rts();
+        return true;
+    }
 
     verify = cpu.a != 0; /* $F4A5 is entered with the verify flag in A */
     name_addr = (uint16_t)(mem_low[ZP_FNADR] | (mem_low[ZP_FNADR + 1] << 8));

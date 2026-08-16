@@ -73,4 +73,10 @@ void c64_shutdown(void);
 /* Total emulated cycles across c64_run, for the exit speed report. */
 extern unsigned long c64_total_cycles;
 
+#ifndef NDEBUG
+/* Wall-tick profile buckets: 0=cpu_run 1=vic 2=io 3=cia+drive. */
+extern unsigned long c64_prof[4];
+extern unsigned long c64_prof_lines;
+#endif
+
 #endif /* EMUDORE_CE_C64_H */

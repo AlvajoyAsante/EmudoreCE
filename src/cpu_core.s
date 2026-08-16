@@ -26,11 +26,11 @@
 .extern _mem_setup_banks
 .extern _cpu_step_slow
 .extern _cpu_warp
+.extern _cpu_jit_kernal
 
 /* a = code byte at pc, pc++ (no IO check: pc never points at IO) */
 .macro FETCH_A
-    push iy
-    pop de
+    lea de, iy + 0
     inc iy
     ld hl, 0
     ld l, d
@@ -43,43 +43,44 @@
     ld a, (hl)
 .endm
 
-/* de = 16-bit operand (lo, hi), DEU = 0 */
+/* de = 16-bit operand (lo, hi), DEU = 0. The hi byte reuses the lo fetch's
+   host pointer (same 6502 page => same table entry => contiguous); operands
+   crossing a page boundary take the full second walk. */
 .macro FETCH_DE16
     FETCH_A
     ld (op_lo), a
-    FETCH_A
-    ld de, 0
+    ld a, e              ; low byte of the lo-operand's 6502 address
+    inc a
+    jr z, 7f
+    inc iy
+    inc hl
+    ld a, (hl)
+    jr 8f
+7:  FETCH_A
+8:  ld de, 0
     ld d, a
     ld a, (op_lo)
     ld e, a
 .endm
 
-/* zf/nf from a; preserves a (via b) */
+/* Lazy N/Z: store the result byte; cpu.zf/cpu.nf are materialized only at
+   sync_out / flags_pack (last_z: zero <=> zf set; last_n: bit7 = nf).
+   Two bytes because BIT derives Z and N from different values. Preserves
+   a and all flags; clobbers nothing. */
 .macro SET_NZ
-    ld b, a
-    rlca
-    and a, 1
-    ld (_cpu + 12), a
-    ld a, b
-    or a, a
-    ld a, 0
-    jr nz, 8f
-    inc a
-8:  ld (_cpu + 7), a
-    ld a, b
+    ld (last_z), a
+    ld (last_n), a
 .endm
 
 .macro CYC n
-    ld de, -\n
-    add ix, de
+    lea ix, ix - \n
 .endm
 
 /* hl (16-bit result, upper byte dirty) -> de with DEU = 0 */
 .macro HL16_TO_DE
-    ld (scr3), hl
-    xor a, a
-    ld (scr3 + 2), a
-    ld de, (scr3)
+    ld de, 0
+    ld e, l
+    ld d, h
 .endm
 
 /* ---- shared helpers ---------------------------------------------------- */
@@ -283,20 +284,14 @@ shift_flags:
 
 bit_core:
     ld a, b
-    rlca
-    and a, 1
-    ld (_cpu + 12), a
-    ld a, b
+    ld (last_n), a       ; nf = operand bit7 (lazy)
     rlca
     rlca
     and a, 1
     ld (_cpu + 11), a
     ld a, (_cpu + 3)
     and a, b
-    ld a, 0
-    jr nz, 9f
-    inc a
-9:  ld (_cpu + 7), a
+    ld (last_z), a       ; zf = (a & operand) == 0 (lazy)
     ret
 
 /* RMW inc/dec at de (double write, matching the C core's IO semantics) */
@@ -347,10 +342,10 @@ _cpu_run_asm:
     xor a, a
     ld (scr3 + 2), a
     ld iy, (scr3)
+    call seed_lazy
 
 main_loop:
-    push ix
-    pop hl
+    lea hl, ix + 0
     add hl, hl               ; carry = countdown sign: batch expired
     jp c, run_done
     FETCH_A
@@ -376,7 +371,7 @@ run_fail:
     pop ix
     ret
 
-sync_out:                    ; iy/ix -> cpu.pc/cpu.cycles
+sync_out:                    ; iy/ix -> cpu.pc/cpu.cycles, lazy NZ -> flags
     ld (scr3), iy
     ld a, (scr3)
     ld (_cpu + 0), a
@@ -389,12 +384,45 @@ sync_out:                    ; iy/ix -> cpu.pc/cpu.cycles
     or a, a
     sbc hl, de
     ld (_cpu + 13), hl
+    ld a, (last_n)
+    rlca
+    and a, 1
+    ld (_cpu + 12), a
+    ld a, (last_z)
+    or a, a
+    ld a, 0
+    jr nz, 4f
+    inc a
+4:  ld (_cpu + 7), a
+    ret
+
+seed_lazy:                   ; struct zf/nf -> lazy bytes; clobbers a
+    ld a, (_cpu + 7)
+    xor a, 1
+    ld (last_z), a
+    ld a, (_cpu + 12)
+    rrca                     ; bit0 -> bit7
+    ld (last_n), a
     ret
 
 /* fallback: rewind the consumed opcode and run one C step */
 op_fallback:
     ld de, 0xffffff
     add iy, de
+    ld hl, (_cpu_fallbacks)
+    inc hl
+    ld (_cpu_fallbacks), hl
+    lea de, iy + 0           ; re-read the opcode for diagnostics (cold path)
+    ld hl, 0
+    ld l, d
+    add hl, hl
+    add hl, hl
+    ld bc, _mem_rd_pg
+    add hl, bc
+    ld hl, (hl)
+    add hl, de
+    ld a, (hl)
+    ld (_cpu_fallback_op), a
     call sync_out
     call _cpu_step_slow
     or a, a
@@ -413,14 +441,13 @@ op_fallback:
     xor a, a
     ld (scr3 + 2), a
     ld iy, (scr3)
+    call seed_lazy
     jp main_loop
 
 /* taken branch: c = offset, iy = pc after operand */
 do_branch:
-    push iy
-    pop hl
-    ld a, h
-    ld (br_old), a
+    lea hl, iy + 0
+    ld b, h                  ; old page byte
     ld de, 0
     ld e, c
     bit 7, c
@@ -432,13 +459,109 @@ do_branch:
     ld (scr3 + 2), a
     ld iy, (scr3)
     ld a, (scr3 + 1)
-    ld b, a
-    ld a, (br_old)
     cp a, b
-    ld de, -1                ; taken +1, page cross +2 (countdown)
+    lea ix, ix - 1           ; taken +1, page cross +2 (countdown)
     jr z, 2f
-    dec de
-2:  add ix, de
+    lea ix, ix - 1
+2:  cp a, 0xE0               ; a = new page: JIT blocks live in the KERNAL
+    jp nc, jit_dispatch
+    jp main_loop
+
+/* ---- ROM JIT blocks ------------------------------------------------------
+   Native translations of verified KERNAL code, entered whenever a control
+   transfer (branch/jmp/jsr) lands on a block address. Gates: exact pc
+   match, the block's bit in _cpu_jit_kernal (ROM bytes verified at boot by
+   c64.c), HIRAM set (KERNAL banked in). Idle-loop blocks follow the warp
+   convention: one iteration's architectural side effects, then end the
+   batch (state cannot change until an IRQ, and IRQs only fire at batch
+   boundaries). */
+jit_dispatch:                ; iy = new pc, a = its page byte (>= 0xE0)
+    cp a, 0xE5
+    jr z, jit_try_e5cd
+    cp a, 0xF6
+    jr z, jit_try_udtim
+    jp main_loop
+
+jit_try_e5cd:                ; $E5CD: screen editor wait-for-key loop
+    ld a, iyl
+    cp a, 0xCD
+    jp nz, main_loop
+    ld a, (_cpu_jit_kernal)
+    and a, 1
+    jp z, main_loop
+    ld hl, (_mem_low)
+    inc hl
+    ld a, (hl)               ; $01 bank latch
+    and a, 2                 ; HIRAM: KERNAL actually mapped
+    jp z, main_loop
+    ld hl, (_mem_low)
+    ld de, 0x00C6
+    add hl, de
+    ld a, (hl)               ; NDX (keyboard buffer count)
+    or a, a
+    jp nz, main_loop         ; key waiting: interpret the exit normally
+    ; LDA $C6 / STA $CC / STA $0292 with A=0, then spin: emulate one
+    ; iteration and consume the batch
+    ld (last_z), a
+    ld (last_n), a
+    ld (_cpu + 3), a
+    ld hl, (_mem_low)
+    ld de, 0x00CC
+    add hl, de
+    ld (hl), a               ; BLNSW: cursor blink on
+    ld hl, (_mem_low)
+    ld de, 0x0292
+    add hl, de
+    ld (hl), a               ; AUTODN: scroll direction
+    ld hl, (_cpu_jit_hits)
+    inc hl
+    ld (_cpu_jit_hits), hl
+    ld ix, 0
+    lea ix, ix - 1           ; countdown -1: batch ends at the next check
+    jp main_loop
+
+jit_try_udtim:               ; $F69B UDTIM: LDX #0, 24-bit jiffy increment
+    ld a, iyl
+    cp a, 0x9B
+    jp nz, main_loop
+    ld a, (_cpu_jit_kernal)
+    and a, 2
+    jp z, main_loop
+    ld hl, (_mem_low)
+    inc hl
+    ld a, (hl)
+    and a, 2                 ; HIRAM
+    jp z, main_loop
+    xor a, a
+    ld (_cpu + 4), a         ; X = 0 (INC flags overwrite LDX's below)
+    ld hl, (_mem_low)
+    ld de, 0x00A2
+    add hl, de
+    inc (hl)                 ; INC $A2 (jiffy lo)
+    ld a, (hl)
+    ld (last_z), a
+    ld (last_n), a
+    jr nz, 5f                ; LDX 2 + INC 5 + BNE taken 3
+    dec hl
+    inc (hl)                 ; INC $A1
+    ld a, (hl)
+    ld (last_z), a
+    ld (last_n), a
+    jr nz, 6f                ; 2+5+2 + 5+3
+    dec hl
+    inc (hl)                 ; INC $A0
+    ld a, (hl)
+    ld (last_z), a
+    ld (last_n), a
+    lea ix, ix - 21          ; 2+5+2+5+2+5, falls through to $F6A7
+    jr 7f
+6:  lea ix, ix - 17
+    jr 7f
+5:  lea ix, ix - 10
+7:  ld hl, (_cpu_jit_hits2)
+    inc hl
+    ld (_cpu_jit_hits2), hl
+    ld iy, 0xF6A7            ; SEC / day-rollover compare: interpreted
     jp main_loop
 
 /* ---- opcode macro bodies ------------------------------------------------ */
@@ -453,6 +576,34 @@ do_branch:
     jp nz, do_branch
 .else
     jp z, do_branch
+.endif
+    jp main_loop
+.endm
+
+.macro BR_Z taken_if_set     ; zf lazy: set <=> last_z == 0
+    FETCH_A
+    ld c, a
+    CYC 2
+    ld a, (last_z)
+    or a, a
+.if \taken_if_set
+    jp z, do_branch
+.else
+    jp nz, do_branch
+.endif
+    jp main_loop
+.endm
+
+.macro BR_N taken_if_set     ; nf lazy: set <=> last_n bit7
+    FETCH_A
+    ld c, a
+    CYC 2
+    ld a, (last_n)
+    or a, a
+.if \taken_if_set
+    jp m, do_branch
+.else
+    jp p, do_branch
 .endif
     jp main_loop
 .endm
@@ -847,12 +998,12 @@ cld_h: FLAGSET 9, 0
 sed_h: FLAGSET 9, 1
 clv_h: FLAGSET 11, 0
 
-bne_h: BR_IF 7, 0
-beq_h: BR_IF 7, 1
+bne_h: BR_Z 0
+beq_h: BR_Z 1
 bcc_h: BR_IF 6, 0
 bcs_h: BR_IF 6, 1
-bpl_h: BR_IF 12, 0
-bmi_h: BR_IF 12, 1
+bpl_h: BR_N 0
+bmi_h: BR_N 1
 bvc_h: BR_IF 11, 0
 bvs_h: BR_IF 11, 1
 
@@ -1230,13 +1381,14 @@ jmp_h:
     jr nz, 9f
     ld ix, 0             ; jmp-to-self: only an IRQ exits, end the batch
 9:  CYC 3
+    ld a, iyh
+    cp a, 0xE0
+    jp nc, jit_dispatch
     jp main_loop
 
 jsr_h:
     FETCH_DE16
-    push iy
-    pop hl
-    dec hl
+    lea hl, iy - 1       ; return address = next instruction - 1
     push de              ; push6502 clobbers de: save the jump target
     ld b, h
     push hl
@@ -1246,6 +1398,9 @@ jsr_h:
     call push6502
     pop iy               ; saved target -> pc
     CYC 6
+    ld a, iyh
+    cp a, 0xE0
+    jp nc, jit_dispatch
     jp main_loop
 
 rts_h:
@@ -1270,8 +1425,8 @@ nop_h:
 
 /* 6502 P byte from flag bytes -> a; clobbers b */
 flags_pack:
-    ld a, (_cpu + 12)
-    rrca                 ; nf -> bit7
+    ld a, (last_n)
+    and a, 0x80          ; nf -> bit7
     ld b, a
     ld a, (_cpu + 11)
     rrca
@@ -1290,9 +1445,12 @@ flags_pack:
     add a, a             ; idf -> bit2
     or a, b
     ld b, a
-    ld a, (_cpu + 7)
-    add a, a             ; zf -> bit1
-    or a, b
+    ld a, (last_z)
+    or a, a
+    ld a, 0
+    jr nz, 3f
+    ld a, 2              ; zf -> bit1
+3:  or a, b
     ld b, a
     ld a, (_cpu + 6)     ; cf -> bit0
     or a, b
@@ -1306,7 +1464,8 @@ flags_unpack:
     ld a, c
     rrca
     and a, 1
-    ld (_cpu + 7), a
+    xor a, 1             ; last_z = zf ? 0 : nonzero
+    ld (last_z), a
     ld a, c
     rrca
     rrca
@@ -1324,9 +1483,8 @@ flags_unpack:
     and a, 1
     ld (_cpu + 11), a
     ld a, c
-    rlca
-    and a, 1
-    ld (_cpu + 12), a
+    and a, 0x80          ; last_n bit7 = nf
+    ld (last_n), a
     ret
 
 php_h:
@@ -1631,6 +1789,15 @@ until_cyc: .space 3
 scr3:      .space 3
 op_lo:     .space 1
 wr_val:    .space 1
-br_old:    .space 1
+last_z:    .space 1
+last_n:    .space 1
+.global _cpu_fallbacks
+_cpu_fallbacks:   .space 3
+.global _cpu_fallback_op
+_cpu_fallback_op: .space 1
+.global _cpu_jit_hits
+_cpu_jit_hits:    .space 3
+.global _cpu_jit_hits2
+_cpu_jit_hits2:   .space 3
 
 .section ".note.GNU-stack","",@progbits

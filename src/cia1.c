@@ -131,10 +131,20 @@ uint8_t cia1_read_register(uint8_t r)
 
 bool cia1_emulate(void)
 {
-    /* Elapsed REAL time -> C64 cycles (32768 Hz tick ~= 30 C64 cycles). */
+    /* Elapsed REAL time -> C64 cycles (32768 Hz tick ~= 30 C64 cycles),
+       CLAMPED to the cycles the CPU actually executed since the last call.
+       Uncapped wall pacing livelocks slow scenes: at 8% speed a real-time
+       60 Hz jiffy = 750 IRQs per emulated second, and the KERNAL handler
+       alone outruns the 16.7 ms IRQ period, so the foreground never runs.
+       Fast scenes (warp/idle) still pace at true 60 Hz. */
+    static unsigned int prev_cpu_cycles;
     unsigned int now = (unsigned int)timer_Get(1);
     unsigned int elapsed = (now - prev_rtc_ticks) * 30;
+    unsigned int executed = cpu.cycles - prev_cpu_cycles;
     prev_rtc_ticks = now;
+    prev_cpu_cycles = cpu.cycles;
+    if (elapsed > executed)
+        elapsed = executed;
 
     if (timer_a_enabled && timer_a_input_mode == CIA_MODE_PROCESSOR)
     {

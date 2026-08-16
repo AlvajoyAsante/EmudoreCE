@@ -11,6 +11,7 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <sys/timers.h>
 #include "c64.h"
 #include "cpu.h"
 #include "memory.h"
@@ -43,6 +44,30 @@ static void patch_kernal_ram_test(void)
         memcpy(&k[0x1d6c], patch, sizeof(patch));
 }
 
+/* ROM-JIT gates: each native block in cpu_core.s is only valid for the
+   exact KERNAL bytes it was translated from. bit0 = $E5CD wait-for-key
+   (LDA $C6/STA $CC/STA $0292/BEQ), bit1 = $F69B UDTIM jiffy increment
+   (LDX #0/INC $A2/BNE/INC $A1/BNE/INC $A0). */
+static void detect_jit_blocks(void)
+{
+    const uint8_t *k = mem_kernal_rom_ptr();
+    uint8_t mask = 0;
+    if (k[0x05cd] == 0xA5 && k[0x05ce] == 0xC6 &&
+        k[0x05cf] == 0x85 && k[0x05d0] == 0xCC &&
+        k[0x05d1] == 0x8D && k[0x05d2] == 0x92 &&
+        k[0x05d3] == 0x02 &&
+        k[0x05d4] == 0xF0 && k[0x05d5] == 0xF7)
+        mask |= 1;
+    if (k[0x169b] == 0xA2 && k[0x169c] == 0x00 &&
+        k[0x169d] == 0xE6 && k[0x169e] == 0xA2 &&
+        k[0x169f] == 0xD0 && k[0x16a0] == 0x06 &&
+        k[0x16a1] == 0xE6 && k[0x16a2] == 0xA1 &&
+        k[0x16a3] == 0xD0 && k[0x16a4] == 0x02 &&
+        k[0x16a5] == 0xE6 && k[0x16a6] == 0xA0)
+        mask |= 2;
+    cpu_jit_kernal = mask;
+}
+
 /* Load the three C64 ROMs into the ROM image. Returns false on failure.
    No dbg_printf here: this feeds c64_init's return value. */
 static bool load_roms(void)
@@ -55,6 +80,7 @@ static bool load_roms(void)
     if (!CEPackageRead(CE_PACKAGE_CHARS, mem_chars_rom_ptr(), 0x1000))
         return false;
     patch_kernal_ram_test();
+    detect_jit_blocks();
     return true;
 }
 
@@ -107,30 +133,68 @@ void c64_init(void)
    24-bit and wraps every ~17 s). Read by main()'s exit speed report. */
 unsigned long c64_total_cycles;
 
+#ifndef NDEBUG
+/* Wall-tick (32 kHz) buckets per subsystem: 0=cpu_run 1=vic 2=io 3=cia+drive.
+   Coarse per call but exact in aggregate; names the hog in the exit dump. */
+unsigned long c64_prof[4];
+unsigned long c64_prof_lines;
+#endif
+
 void c64_run(void)
 {
-    /* cpu_run executes a whole raster line's worth of instructions per call;
-       CIA timers tick every 4 lines (still 60x finer than their 60 Hz IRQ).
-       Keypad polling runs every line, but io_emulate itself is wall-clock
-       throttled, so this stays cheap while avoiding startup input starvation. */
+    /* cpu_run executes a whole raster line's worth of instructions per call.
+       Glue cadence is tuned to its real cost: io_emulate and cia1_emulate
+       each pay a ~12 us timer_Get (peripheral-bus reads), so they run every
+       8/16 lines (still ~2500/1250 Hz); cheap cycle-based cia2/drive stay
+       at 4 lines. */
     unsigned int line = 0;
     unsigned int last_cycles = cpu.cycles;
+#ifndef NDEBUG
+    unsigned int t0, t1;
+#endif
     for (;;)
     {
+#ifndef NDEBUG
+        t0 = (unsigned int)timer_Get(1);
+#endif
         if (!cpu_run(vic_raster_due))
             return;
         c64_total_cycles += (unsigned int)(cpu.cycles - last_cycles);
         last_cycles = cpu.cycles;
+#ifndef NDEBUG
+        t1 = (unsigned int)timer_Get(1);
+        c64_prof[0] += (unsigned int)(t1 - t0);
+#endif
         if (!vic_emulate())
             return;
-        if (!io_emulate())
-            return;   /* CLEAR pressed */
+#ifndef NDEBUG
+        c64_prof[1] += (unsigned int)(timer_Get(1) - t1);
+        c64_prof_lines++;
+#endif
         ++line;
+        if ((line & 7) == 0)
+        {
+#ifndef NDEBUG
+            t0 = (unsigned int)timer_Get(1);
+#endif
+            if (!io_emulate())
+                return;   /* CLEAR pressed */
+#ifndef NDEBUG
+            c64_prof[2] += (unsigned int)(timer_Get(1) - t0);
+#endif
+        }
         if ((line & 3) == 0)
         {
-            cia1_emulate();
+#ifndef NDEBUG
+            t0 = (unsigned int)timer_Get(1);
+#endif
             cia2_emulate();
             drive_tick();
+            if ((line & 15) == 0)
+                cia1_emulate();
+#ifndef NDEBUG
+            c64_prof[3] += (unsigned int)(timer_Get(1) - t0);
+#endif
         }
     }
 }

@@ -12,6 +12,7 @@
 #include <graphx.h>
 #include <keypadc.h>
 #include <stdint.h>
+#include <string.h>
 #include <debug.h>
 #include <sys/timers.h>
 
@@ -266,7 +267,12 @@ int main(void)
             return 0;
         }
         if (choice == 2)
-            fileCount = 0; /* plain BASIC boot: no KERNAL trap, no autoload */
+        {
+            /* plain BASIC boot: no KERNAL autoload; a manual LOAD would
+               otherwise hit the unpatched IEC path and hang for minutes */
+            drive_disable();
+            fileCount = 0;
+        }
     }
 
     dbg_printf("[boot] init_io\n");
@@ -316,14 +322,13 @@ int main(void)
     cpu_asm_boot_probe(probe_reset, probe_report);
 #endif
 
-     /* Optional disk package (ECDSKnn AppVars): patch the LOAD trap and let
-         drive_tick auto-type LOAD"*",8,1 at the READY prompt. If a file was
-         chosen in the menu, the loader will resolve the wildcard to that entry. */
-     if (fileCount)
-    {
-        drive_patch_kernal();
+    /* The LOAD trap is planted in every mode: with a disk it serves files
+       from the DSK AppVar (drive_tick auto-types LOAD"*",8,1 at READY, a
+       menu-chosen file resolves the wildcard), without one it fails fast
+       with DEVICE NOT PRESENT (the real IEC path hangs on an empty bus). */
+    drive_patch_kernal();
+    if (fileCount)
         dbg_printf("[boot] disk appvar found\n");
-    }
     else
         dbg_printf("[boot] no disk appvar\n");
 
@@ -336,6 +341,75 @@ int main(void)
     dbg_printf("[boot] reset cpu\n");
     cpu_reset();
     c64_mark_ready();
+
+#ifndef NDEBUG
+    {
+        /* Timebase calibration: count timer-1 (32K crystal) ticks across
+           24M CPU-clock ticks of timer 2 (0.5 s at 48 MHz). Expected ~16384;
+           a big deviation means every wall-clock measurement is scaled.
+           timer_Get spins until two consecutive reads match - never true on
+           a CPU-clocked timer - so timer 2 is read only while stopped. */
+        unsigned long t1a, t2;
+        timer_Disable(2);
+        timer_Set(2, 0);
+        t1a = timer_Get(1);
+        do
+        {
+            volatile unsigned int spin = 4000;
+            timer_Enable(2, TIMER_CPU, TIMER_NOINT, TIMER_UP);
+            while (spin--)
+                ;
+            timer_Disable(2); /* pause is ~1% of the spin window */
+            t2 = timer_Get(2);
+        } while (t2 < 24000000UL);
+        dbg_printf("[cal] timer1 ticks per 0.5s: %lu (expect ~16384)\n",
+                   timer_Get(1) - t1a);
+    }
+
+    {
+        /* Microbench 1: raw timer_Get cost (it reads peripheral-bus regs,
+           which may be far slower than RAM and inflate every profile
+           bucket, including this profiler's own overhead). */
+        unsigned long tb0, tb1;
+        unsigned int i;
+        volatile unsigned long sink = 0;
+        tb0 = timer_Get(1);
+        for (i = 0; i < 10000; ++i)
+            sink += timer_Get(1);
+        tb1 = timer_Get(1);
+        (void)sink;
+        dbg_printf("[bench] 10000x timer_Get: %lu ticks\n", tb1 - tb0);
+
+        /* Microbench 2: asm core alone on a 3-instruction RAM loop
+           (INX/DEX/JMP $0400, 8 cycles/iter, no IO, no warp, no per-line
+           glue) -> the core's true cyc/s ceiling. */
+        mem_low[0x400] = 0xE8;
+        mem_low[0x401] = 0xCA;
+        mem_low[0x402] = 0x4C;
+        mem_low[0x403] = 0x00;
+        mem_low[0x404] = 0x04;
+        cpu.pc = 0x0400;
+        tb0 = timer_Get(1);
+        cpu_run(cpu.cycles + 650000UL);
+        tb1 = timer_Get(1);
+        dbg_printf("[bench] 650k cyc asm loop: %lu ticks = %lu cyc/s\n",
+                   tb1 - tb0,
+                   (unsigned long)(((uint64_t)650000UL << 15) / (tb1 - tb0)));
+
+        /* Microbench 3: raw VRAM fill (one full 320x240 frame per pass).
+           Splits "VRAM is inherently slow under LCD DMA" from "the char
+           renderer wastes work": a full-frame render measures ~120 ms. */
+        tb0 = timer_Get(1);
+        for (i = 0; i < 10; ++i)
+            memset(gfx_vram, 0, GFX_LCD_WIDTH * GFX_LCD_HEIGHT);
+        tb1 = timer_Get(1);
+        dbg_printf("[bench] 10x 76800B VRAM memset: %lu ticks\n", tb1 - tb0);
+
+        mem_low[0x400] = mem_low[0x401] = mem_low[0x402] = 0;
+        mem_low[0x403] = mem_low[0x404] = 0;
+        cpu_reset(); /* re-fetch the reset vector for the real boot */
+    }
+#endif
 
     dbg_printf("[boot] run\n");
     gfx_FillScreen(0); /* boot text must not linger through skipped frames */
@@ -368,6 +442,21 @@ int main(void)
         dbg_printf("[speed] %lu cyc in %lu ticks = %lu cyc/s (%lu%% of PAL)\n",
                    c64_total_cycles, speed_ticks, cps, cps / 9852);
     }
+
+#ifndef NDEBUG
+    dbg_printf("[prof] lines=%lu cpu=%lu vic=%lu io=%lu cia=%lu ticks\n",
+               c64_prof_lines, c64_prof[0], c64_prof[1],
+               c64_prof[2], c64_prof[3]);
+#endif
+    dbg_printf("[cpu] fallbacks=%u last-op=%02x\n",
+               cpu_fallbacks, cpu_fallback_op);
+    dbg_printf("[jit] mask=%02x e5cd=%u udtim=%u\n",
+               cpu_jit_kernal, cpu_jit_hits, cpu_jit_hits2);
+#ifndef NDEBUG
+    dbg_printf("[vprof] renders=%lu flush=%lu char=%lu rows=%lu plines=%lu\n",
+               vic_prof[2], vic_prof[0], vic_prof[1],
+               vic_prof[3], vic_prof[4]);
+#endif
 
     /* drive/BRK diagnostics gathered during the run */
     {

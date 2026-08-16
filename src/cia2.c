@@ -87,7 +87,10 @@ uint8_t cia2_read_register(uint8_t r)
 
     switch (r)
     {
-    case 0x0: retval = pra; break;
+    case 0x0:
+        retval = pra;
+        vic_poll_check(3); /* IEC bit-bang waits: nothing to receive, warp */
+        break;
     case 0x1: retval = prb; break;
     case 0x4: retval = (uint8_t)(timer_a_counter & 0x00ff); break;
     case 0x5: retval = (uint8_t)((timer_a_counter & 0xff00) >> 8); break;

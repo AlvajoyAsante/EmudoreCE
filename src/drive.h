@@ -51,9 +51,16 @@ int drive_file_name(uint8_t index, char *buffer, uint8_t bufferSize);
 void drive_select_file(uint8_t index);
 
 /**
+ * Disable the virtual drive ("BASIC (no disk)" boot choice): no autoload,
+ * and trapped LOADs answer DEVICE NOT PRESENT immediately.
+ */
+void drive_disable(void);
+
+/**
  * Patch the loaded KERNAL image to trap LOAD requests.
  *
- * Call this only after c64_boot_roms() and only when drive_init() succeeded.
+ * Call after c64_boot_roms() in every boot mode: with no disk present the
+ * trap fails LOADs fast instead of hanging in the IEC path.
  */
 void drive_patch_kernal(void);
 

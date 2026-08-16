@@ -34,6 +34,18 @@ extern uint16_t cpu_illegal_pc;
    consumed by both CPU cores' IO-read paths (ends the line batch early) */
 extern uint8_t cpu_warp;
 
+/* ROM-JIT gate: KERNAL bytes verified against the native blocks (c64.c). */
+extern uint8_t cpu_jit_kernal;
+
+/* asm-core fallback diagnostics (cpu_core.s): total C-step bridges and the
+   most recent opcode that took one. */
+extern unsigned int cpu_fallbacks;
+extern uint8_t cpu_fallback_op;
+
+/* ROM-JIT block hit counters ($E5CD wait-key warps, $F69B UDTIM runs). */
+extern unsigned int cpu_jit_hits;
+extern unsigned int cpu_jit_hits2;
+
 /* diagnostics: BRK executions (runaway code warm-starting BASIC) */
 extern uint16_t cpu_last_brk_pc;
 extern unsigned int cpu_brk_count;

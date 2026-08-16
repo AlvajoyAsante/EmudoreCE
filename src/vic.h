@@ -93,6 +93,12 @@ void vic_set_boot_hidden(bool hidden);
  */
 void vic_poll_check(uint8_t id);
 
+#ifndef NDEBUG
+/* render-path profile: 0=wrap-flush ticks 1=char-row ticks 2=renders
+   3=char-row calls 4=process_line calls */
+extern unsigned long vic_prof[5];
+#endif
+
 /**
  * Flush deferred rendering up to the current raster position.
  *

@@ -138,6 +138,12 @@ uint8_t vic_row_asm_selftest(void)
 static bool render_frame;
 static bool render_requested; /* set by io on key change: render next frame */
 
+#ifndef NDEBUG
+/* Render-path profile: 0=frame-wrap flush ticks, 1=draw_char_row ticks,
+   2=rendered frames, 3=draw_char_row calls, 4=process_line calls. */
+unsigned long vic_prof[5];
+#endif
+
 /* Lazy (TIBoyce-style) rendering: lines are NOT drawn as the raster
    advances. pending_line is the first undrawn line; a display-affecting
    register write flushes pending..current-1 with the pre-write state, and
@@ -930,7 +936,14 @@ static void flush_lines(int upto)
             if (line >= 0 && (line & 7) == 0 && line + 7 < VIC_G_RES_Y)
             {
                 int k;
+#ifndef NDEBUG
+                unsigned int t0 = (unsigned int)timer_Get(1);
+#endif
                 draw_char_row(rstr);
+#ifndef NDEBUG
+                vic_prof[1] += (unsigned int)(timer_Get(1) - t0);
+                vic_prof[3]++;
+#endif
                 for (k = 0; k < 8; ++k)
                     sprite_tick(rstr + k, true);
                 pending_line = rstr + 8;
@@ -938,6 +951,10 @@ static void flush_lines(int upto)
             }
         }
         cur_line = rstr;
+#ifndef NDEBUG
+        if (render_frame)
+            vic_prof[4]++;
+#endif
         process_line(rstr);
         pending_line = rstr + 1;
     }
@@ -984,9 +1001,17 @@ bool vic_emulate(void)
         if (rstr >= VIC_SCREEN_LINES)
         {
             bool was_rendered = render_frame; /* this frame reached VRAM */
+#ifndef NDEBUG
+            unsigned int t0 = (unsigned int)timer_Get(1);
+#endif
             flush_lines(VIC_SCREEN_LINES);
             pending_line = 0;
             io_screen_refresh();
+#ifndef NDEBUG
+            vic_prof[0] += (unsigned int)(timer_Get(1) - t0);
+            if (was_rendered)
+                vic_prof[2]++;
+#endif
             frame_count++;
             /* Wall-clock frame pacing (~12 fps of the 32 kHz timer). The
                render is committed on ALTERNATING emulated frame parity:
@@ -998,6 +1023,7 @@ bool vic_emulate(void)
             else
             {
                 static unsigned int last_render_ticks;
+                static unsigned int last_render_frame;
                 static bool render_pending;
                 static uint8_t render_parity;
                 unsigned int now = (unsigned int)timer_Get(1);
@@ -1008,11 +1034,19 @@ bool vic_emulate(void)
                     last_render_ticks = now;
                 }
                 render_frame = false;
+                /* >=4 emulated frames between renders: a full-frame VRAM
+                   repaint costs ~120 ms host, so when emulation is slow the
+                   12 fps wall target would spend most of the run drawing.
+                   At full speed 50/4 = 12.5 fps, i.e. no change. Key-press
+                   renders (render_requested) bypass the spacing. */
                 if (render_pending &&
-                    (uint8_t)(frame_count & 1u) == render_parity)
+                    (uint8_t)(frame_count & 1u) == render_parity &&
+                    (render_requested ||
+                     frame_count - last_render_frame >= 4))
                 {
                     render_frame = true;
                     render_pending = false;
+                    last_render_frame = frame_count;
                     render_parity ^= 1;
                 }
             }
@@ -1042,12 +1076,13 @@ bool vic_emulate(void)
    same raster line is a busy poll (loops read 5-10x per line); flag the CPU
    core to end the line batch instead of spinning through it. First read per
    line never warps, so one-shot reads keep their full line budget.
-   Streams: 0 = $D011/$D012 raster, 1 = $DC00 joystick, 2 = $DC01 keyboard.
+   Streams: 0 = $D011/$D012 raster, 1 = $DC00 joystick, 2 = $DC01 keyboard,
+   3 = $DD00 IEC bus (no drive is attached, so polls only await timeouts).
    Separate keys so unrelated IO reads on one line (an IRQ handler touching
    CIA and VIC once each) never count as a poll. */
 void vic_poll_check(uint8_t id)
 {
-    static int poll_key[3] = { -1, -1, -1 };
+    static int poll_key[4] = { -1, -1, -1, -1 };
     int key = get_raster_counter() | (int)(frame_count << 9);
     if (key == poll_key[id])
         cpu_warp = 1;

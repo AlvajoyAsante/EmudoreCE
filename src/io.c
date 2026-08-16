@@ -93,6 +93,7 @@ uint16_t io_palette_probe(uint8_t index)
 
 void io_shutdown(void)
 {
+    kb_SetMode(MODE_1_INDISCRIMINATE); /* OS default after continuous mode */
 }
 
 /* ---- keypad -> C64 matrix --------------------------------------------- */
@@ -218,14 +219,23 @@ bool io_emulate(void)
        cia1.c runs): matches the KERNAL's real-time IRQ scan rate, so short
        taps register no matter how slow the emulated frame rate is. */
     static unsigned int last_scan_ticks;
+    static bool continuous;
     unsigned int now = (unsigned int)timer_Get(1);
 
     if (now - last_scan_ticks < 546)
         return !quit_requested;
     last_scan_ticks = now;
 
+    /* kb_Scan() busy-waits a full hardware scan (~1.3 ms measured): put the
+       controller in continuous mode ONCE instead and just read kb_Data.
+       Set lazily because boot/menu code calls kb_Scan after io_init. */
+    if (!continuous)
+    {
+        kb_SetMode(MODE_3_CONTINUOUS);
+        continuous = true;
+    }
+
     memset(keyboard_matrix, 0xff, sizeof(keyboard_matrix));
-    kb_Scan();
 
     if (kb_IsDown(kb_KeyClear))
         quit_requested = true;
