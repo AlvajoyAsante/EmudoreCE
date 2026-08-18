@@ -1,3 +1,14 @@
+# =======================================================================
+# C64 PORT: EMUDORE
+# This build system is configured for the Commodore 64 (C64) target.
+#
+# IMPORTANT: All development, builds, and release procedures must follow
+# the instructions in the README.md file, which has been updated for C64.
+#
+# Build flags (-Oz, -fno-strict-aliasing) are specifically tailored
+# for the eZ80-clang compiler environment used for C64 emulation.
+# =======================================================================
+
 # ----------------------------
 # Program Options
 # ----------------------------
