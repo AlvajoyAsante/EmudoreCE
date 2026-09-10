@@ -1,5 +1,10 @@
 # emudore-CE (C64 on TI-84+CE) port notes
 
+Current graphics changes and verified test commands are in
+[performance.md](performance.md). The notes below include older experiments;
+in particular, compact VRAM staging is not active, and the current nightly
+compiler build uses `-O2`. Treat historical FPS figures as historical results.
+
 ## What was done
 - Pivoted the repo from MiniMSX (MSX/fMSX) to emudore (Commodore 64).
 - Deleted: MiniMSX.c/.h, src/Z80/, src/fMSX/. Kept CEPackage.{c,h} -> moved to src/ root.

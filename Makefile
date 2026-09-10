@@ -5,7 +5,7 @@
 # IMPORTANT: All development, builds, and release procedures must follow
 # the instructions in the README.md file, which has been updated for C64.
 #
-# Build flags (-Oz, -fno-strict-aliasing) are specifically tailored
+# Build flags (-O2, -fno-strict-aliasing) are specifically tailored
 # for the eZ80-clang compiler environment used for C64 emulation.
 # =======================================================================
 
@@ -22,12 +22,18 @@ LTO          := NO
 
 # ----------------------------
 
-# -Oz (CEdev standard) on purpose: -O2 triggers ez80-clang register-allocator
-# bugs that clobber the IX frame pointer mid-function (io_init/io_emulate/
-# vic_emulate all miscompiled -> MMIO corruption and NMI resets).
-CFLAGS ?= -Wall -Wextra -Oz -fno-strict-aliasing
+CFLAGS ?= -Wall -Wextra -O2 -fno-strict-aliasing
 
+PROFILE ?= 0
+FRAME_SKIP ?= 0
+CHAR_ASM ?= 1
+# Reserve IX: nightly 19.1.0 otherwise reuses live stack frames as data pointers.
+override CFLAGS += -fno-omit-frame-pointer -DEMUDORE_PROFILE=$(PROFILE) -DEMUDORE_FRAME_SKIP=$(FRAME_SKIP) -DEMUDORE_CHAR_ASM=$(CHAR_ASM)
 
+ifeq ($(PROFILE),1)
+OBJDIR ?= obj/profile
+BINDIR ?= bin/profile
+endif
 
 # ----------------------------
 
@@ -65,3 +71,23 @@ DISK ?= tests/FINALBLW.D64
 .PHONY: disk
 disk:
 	python tools/d64_to_appvar.py "$(DISK)" --output bin/rom
+
+PYTHON ?= python
+OPTIMIZED_OUTPUT ?= bin/optimized
+OPT_PROFILE ?=
+OPT_PROFILE_ARG = $(if $(strip $(OPT_PROFILE)),--profile "$(OPT_PROFILE)")
+
+.PHONY: roms-optimized cart-optimized files-optimized disk-optimized
+roms-optimized:
+	"$(PYTHON)" tools/optimize_appvar.py assets/roms/basic.901226-01.bin --kind basic --output "$(OPTIMIZED_OUTPUT)" $(OPT_PROFILE_ARG)
+	"$(PYTHON)" tools/optimize_appvar.py assets/roms/kernal.bin --kind kernal --output "$(OPTIMIZED_OUTPUT)" $(OPT_PROFILE_ARG)
+	"$(PYTHON)" tools/optimize_appvar.py assets/roms/characters.901225-01.bin --kind chars --output "$(OPTIMIZED_OUTPUT)" $(OPT_PROFILE_ARG)
+
+cart-optimized:
+	"$(PYTHON)" tools/optimize_appvar.py "$(CART)" --kind cart --output "$(OPTIMIZED_OUTPUT)" $(OPT_PROFILE_ARG)
+
+files-optimized:
+	"$(PYTHON)" tools/optimize_appvar.py $(FILES) --output "$(OPTIMIZED_OUTPUT)" $(OPT_PROFILE_ARG)
+
+disk-optimized:
+	"$(PYTHON)" tools/optimize_appvar.py "$(DISK)" --output "$(OPTIMIZED_OUTPUT)" --require-code-change $(OPT_PROFILE_ARG)

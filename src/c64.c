@@ -19,6 +19,7 @@
 #include "cia2.h"
 #include "vic.h"
 #include "io.h"
+#include "perf.h"
 #include "util.h"
 #include "CEPackage.h"
 #include "drive.h"
@@ -149,24 +150,56 @@ void c64_run(void)
        at 4 lines. */
     unsigned int line = 0;
     unsigned int last_cycles = cpu.cycles;
+#if EMUDORE_PROFILE
+    uint8_t sample_phase = 0;
+    unsigned long sample_start;
+#endif
 #ifndef NDEBUG
     unsigned int t0, t1;
 #endif
+    c64_total_cycles = 0;
+    perf_reset();
     for (;;)
     {
+#if EMUDORE_PROFILE
+        perf_set_sample(sample_phase == 0);
+        if (++sample_phase == 17)
+            sample_phase = 0;
+        perf_sample_pc(cpu.pc);
+        sample_start = perf_begin(PERF_CPU);
+#endif
 #ifndef NDEBUG
         t0 = (unsigned int)timer_Get(1);
 #endif
         if (!cpu_run(vic_raster_due))
+        {
+#if EMUDORE_PROFILE
+            perf_end(PERF_CPU, sample_start);
+#endif
             return;
+        }
+#if EMUDORE_PROFILE
+        perf_end(PERF_CPU, sample_start);
+#endif
         c64_total_cycles += (unsigned int)(cpu.cycles - last_cycles);
         last_cycles = cpu.cycles;
 #ifndef NDEBUG
         t1 = (unsigned int)timer_Get(1);
         c64_prof[0] += (unsigned int)(t1 - t0);
 #endif
+    #if EMUDORE_PROFILE
+        sample_start = perf_begin(PERF_VIC);
+    #endif
         if (!vic_emulate())
+        {
+    #if EMUDORE_PROFILE
+            perf_end(PERF_VIC, sample_start);
+    #endif
             return;
+        }
+    #if EMUDORE_PROFILE
+        perf_end(PERF_VIC, sample_start);
+    #endif
 #ifndef NDEBUG
         c64_prof[1] += (unsigned int)(timer_Get(1) - t1);
         c64_prof_lines++;
@@ -174,17 +207,31 @@ void c64_run(void)
         ++line;
         if ((line & 7) == 0)
         {
+    #if EMUDORE_PROFILE
+            sample_start = perf_begin(PERF_IO);
+    #endif
 #ifndef NDEBUG
             t0 = (unsigned int)timer_Get(1);
 #endif
             if (!io_emulate())
+            {
+    #if EMUDORE_PROFILE
+            perf_end(PERF_IO, sample_start);
+    #endif
                 return;   /* CLEAR pressed */
+            }
+    #if EMUDORE_PROFILE
+            perf_end(PERF_IO, sample_start);
+    #endif
 #ifndef NDEBUG
             c64_prof[2] += (unsigned int)(timer_Get(1) - t0);
 #endif
         }
         if ((line & 3) == 0)
         {
+    #if EMUDORE_PROFILE
+            sample_start = perf_begin(PERF_CIA);
+    #endif
 #ifndef NDEBUG
             t0 = (unsigned int)timer_Get(1);
 #endif
@@ -192,6 +239,9 @@ void c64_run(void)
             drive_tick();
             if ((line & 15) == 0)
                 cia1_emulate();
+#if EMUDORE_PROFILE
+            perf_end(PERF_CIA, sample_start);
+#endif
 #ifndef NDEBUG
             c64_prof[3] += (unsigned int)(timer_Get(1) - t0);
 #endif

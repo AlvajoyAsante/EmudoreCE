@@ -3,6 +3,8 @@
 .vs/
 .vscode/
 
+.emudore/
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

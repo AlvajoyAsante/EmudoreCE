@@ -21,6 +21,9 @@ static bool timer_a_irq_triggered, timer_b_irq_triggered;
 static uint8_t timer_a_run_mode, timer_b_run_mode;
 static uint8_t timer_a_input_mode, timer_b_input_mode;
 static unsigned int prev_rtc_ticks;
+static unsigned int prev_cpu_cycles;
+static unsigned int sampled_cpu_cycles;
+static uint8_t rtc_sample_phase;
 static uint8_t pra;
 
 void cia1_reset(void)
@@ -33,6 +36,9 @@ void cia1_reset(void)
     timer_a_run_mode = timer_b_run_mode = CIA_RUN_RESTART;
     pra = 0xff;
     prev_rtc_ticks = 0;
+    prev_cpu_cycles = 0;
+    sampled_cpu_cycles = 0;
+    rtc_sample_phase = 0;
     /* CIA1 timers pace against REAL time (32 kHz crystal timer): the jiffy
        IRQ, cursor blink and key repeat then run at wall-clock speed no
        matter how fast the CPU core emulates. */
@@ -137,14 +143,21 @@ bool cia1_emulate(void)
        60 Hz jiffy = 750 IRQs per emulated second, and the KERNAL handler
        alone outruns the 16.7 ms IRQ period, so the foreground never runs.
        Fast scenes (warp/idle) still pace at true 60 Hz. */
-    static unsigned int prev_cpu_cycles;
-    unsigned int now = (unsigned int)timer_Get(1);
-    unsigned int elapsed = (now - prev_rtc_ticks) * 30;
-    unsigned int executed = cpu.cycles - prev_cpu_cycles;
-    prev_rtc_ticks = now;
+    unsigned int now;
+    unsigned int elapsed;
+
+    sampled_cpu_cycles += cpu.cycles - prev_cpu_cycles;
     prev_cpu_cycles = cpu.cycles;
-    if (elapsed > executed)
-        elapsed = executed;
+    if (++rtc_sample_phase < 4)
+        return true;
+    rtc_sample_phase = 0;
+
+    now = (unsigned int)timer_Get(1);
+    elapsed = (now - prev_rtc_ticks) * 30;
+    prev_rtc_ticks = now;
+    if (elapsed > sampled_cpu_cycles)
+        elapsed = sampled_cpu_cycles;
+    sampled_cpu_cycles = 0;
 
     if (timer_a_enabled && timer_a_input_mode == CIA_MODE_PROCESSOR)
     {

@@ -1,0 +1,5 @@
+*.exe
+*.d
+*_tests
+*.ppm
+*.png

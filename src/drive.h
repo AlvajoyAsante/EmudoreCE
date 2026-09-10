@@ -12,6 +12,23 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef struct
+{
+    uint32_t size;
+    uint32_t crc32;
+} DriveIdentity;
+
+typedef struct
+{
+    char name[17];
+    uint32_t size;
+    uint16_t load_address;
+} DriveFileInfo;
+
+bool drive_file_info(uint8_t index, DriveFileInfo *info);
+bool drive_identity(DriveIdentity *identity);
+void drive_invalidate(void);
+
 /* 6502 JAM opcodes used as traps; never produced by real code. */
 #define DRIVE_TRAP_OPCODE  0x02 /* KERNAL LOAD ($F4A5)                  */
 #define DRIVE_TRAP2_OPCODE 0x12 /* resident game fastloader (signature) */

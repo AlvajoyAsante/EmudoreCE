@@ -21,6 +21,7 @@
 #include "cia1.h"
 #include "cia2.h"
 #include "vic.h"
+#include "perf.h"
 #include "io.h"
 #include "memory.h"
 #include "CEPackage.h"
@@ -234,9 +235,10 @@ int main(void)
     {
         uint8_t rows = vic_row_asm_selftest();
         (void)rows; /* only used by dbg_printf, which is empty in NDEBUG */
-        dbg_printf("[boot] asm rows: hires=%s mc=%s\n",
+        dbg_printf("[boot] asm rows: hires=%s mc=%s chars=%s\n",
                    (rows & 1) ? "OK" : "FAILED",
-                   (rows & 2) ? "OK" : "FAILED");
+               (rows & 2) ? "OK" : "FAILED",
+               (rows & 4) ? "OK" : "FAILED");
     }
 
     /* Validate the three ROM AppVars. bit0=BASIC bit1=KERNAL bit2=CHARGEN. */
@@ -496,9 +498,11 @@ int main(void)
         dbg_printf("[spr] en=%02x dh=%02x dw=%02x prio=%02x mc=%02x msbx=%02x\n",
                    vd.sprite_en, vd.spr_dh, vd.spr_dw, vd.spr_prio,
                    vd.spr_mc, vd.spr_msbx);
+        dbg_printf("[spr] shared=%02x,%02x\n", vd.spr_shared[0], vd.spr_shared[1]);
         for (i = 0; i < 8; ++i)
-            dbg_printf("[spr] #%u x=%u y=%u\n", (unsigned)i,
-                       (unsigned)vd.spr_x[i], (unsigned)vd.spr_y[i]);
+            dbg_printf("[spr] #%u x=%u y=%u ptr=%02x color=%02x\n", (unsigned)i,
+                       (unsigned)vd.spr_x[i], (unsigned)vd.spr_y[i],
+                       vd.spr_ptr[i], vd.spr_color[i]);
         dbg_printf("[wtrace] last %u VIC writes (line reg val):\n",
                    (unsigned)VIC_WTRACE_MAX);
         for (i = 0; i < VIC_WTRACE_MAX; ++i)
@@ -518,13 +522,40 @@ int main(void)
                        c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
                        d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
         }
+#ifndef NDEBUG
         {
-            /* sprite pointer table (VIC bank 3, screen $C000) */
-            uint8_t *p = mem_host_ptr(0xc3f8);
-            (void)p;
-            dbg_printf("[sptr] %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                       p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+            uint16_t table = (uint16_t)(vd.vic_base |
+                ((vd.screen_mem + VIC_SPRITE_PTRS_OFFSET) & 0x3fff));
+            dbg_printf("[sptr] table=%04x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                       table, vd.spr_ptr[0], vd.spr_ptr[1], vd.spr_ptr[2], vd.spr_ptr[3],
+                       vd.spr_ptr[4], vd.spr_ptr[5], vd.spr_ptr[6], vd.spr_ptr[7]);
+            for (i = 0; i < 8; ++i)
+            {
+                uint16_t address = (uint16_t)(vd.spr_ptr[i] * VIC_SPRITE_SIZE);
+                uint8_t offset;
+                if (!(vd.sprite_en & (1u << i)))
+                    continue;
+                dbg_printf("[sprdata] #%u addr=%04x ", (unsigned)i,
+                           (uint16_t)(vd.vic_base | address));
+                for (offset = 0; offset < 63; ++offset)
+                    dbg_printf("%02x", mem_vic_read_byte(address + offset));
+                dbg_printf("\n");
+            }
         }
+        {
+            int panel_y, panel_x;
+            for (panel_y = 156; panel_y < 220; panel_y += 4)
+            {
+                const uint8_t *panel_row = io_text_row(panel_y + IO_CROP_Y);
+                if (!panel_row)
+                    continue;
+                dbg_printf("[panel] y=%d x=224 ", panel_y);
+                for (panel_x = 224; panel_x < 320; ++panel_x)
+                    dbg_printf("%02x", panel_row[panel_x]);
+                dbg_printf("\n");
+            }
+        }
+#endif
         {
             /* framebuffer slices through the play area: raw palette indices
                incl. tag bits (0x20=fg text, 0x10=sprite) */
@@ -543,6 +574,7 @@ int main(void)
     }
 
     c64_shutdown();
+    perf_report();
     gfx_End();
     return 0;
 }

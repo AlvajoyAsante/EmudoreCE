@@ -1,0 +1,5 @@
+test_perf
+test_perf.exe
+disabled
+disabled.exe
+*.o

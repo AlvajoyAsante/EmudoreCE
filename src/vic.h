@@ -10,6 +10,22 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifndef EMUDORE_FRAME_SKIP
+#define EMUDORE_FRAME_SKIP 0
+#endif
+
+#ifndef EMUDORE_CHAR_ASM
+#define EMUDORE_CHAR_ASM 1
+#endif
+
+#ifndef EMUDORE_VIC_TRACE
+#ifdef NDEBUG
+#define EMUDORE_VIC_TRACE 0
+#else
+#define EMUDORE_VIC_TRACE 1
+#endif
+#endif
+
 /**
  * Reset the VIC-II to its power-on state.
  *
@@ -29,10 +45,12 @@ bool vic_emulate(void);
 /**
  * Self-test the optional assembly scanline expanders.
  *
- * @return Bitmask with bit0 set when the hires row expander passed and bit1
- *         set when the multicolor row expander passed.
+ * @return Bitmask: bit0 hires bitmap, bit1 multicolor bitmap, bit2 character
+ *         rows. Each bit enables the corresponding tested kernel.
  */
 uint8_t vic_row_asm_selftest(void);
+/** Return the enabled row-kernel bitmask without running the tests again. */
+uint8_t vic_asm_status(void);
 /**
  * Write one VIC register.
  *
@@ -66,6 +84,7 @@ typedef struct
     uint8_t spr_dh, spr_dw, spr_prio, spr_mc;
    /* per-sprite positions and shared X MSB bits */
     uint8_t spr_x[8], spr_y[8], spr_msbx;
+      uint8_t spr_ptr[8], spr_color[8], spr_shared[2];
    /* decoded memory bases from the current VIC bank state */
     uint16_t screen_mem, char_mem, bitmap_mem, vic_base;
    /* -1 when disabled, otherwise the programmed raster IRQ line */

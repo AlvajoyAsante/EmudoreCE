@@ -28,7 +28,7 @@ _vic_expand_hires_row:
 
 .Lcell:
     ld c, (iy)
-    inc iy
+    lea iy, iy + 8
     ld a, (ix)
     inc ix
     ld d, a

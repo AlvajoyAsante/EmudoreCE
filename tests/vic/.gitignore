@@ -1,0 +1,4 @@
+vic_tests
+vic_tests.exe
+*.d
+*.o

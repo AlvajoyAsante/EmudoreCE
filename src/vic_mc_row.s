@@ -64,7 +64,7 @@ _vic_expand_mc_row:
     ld (_vic_mc_lut+2), a
 
     ld a, (iy)
-    inc iy
+    lea iy, iy + 8
     ld c, a
 
     rlca

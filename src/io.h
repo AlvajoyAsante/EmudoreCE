@@ -2,8 +2,8 @@
  * emudore-CE: calculator screen + keypad that replace the original SDL-based
  * IO class. Everything SDL, std::queue, std::chrono and std::thread is gone.
  *
- * The screen is drawn 1:1 (no scaling) into the graphx draw buffer and copied
- * to the LCD once per emulated frame.
+ * The VIC composes 1:1 rows off-screen, then copies completed rows into the
+ * visible graphx buffer. This is not a full-frame buffer swap.
  */
 #ifndef EMUDORE_CE_IO_H
 #define EMUDORE_CE_IO_H
@@ -22,6 +22,10 @@
 #define IO_CROP_X 43
 #define IO_CROP_Y 22
 
+#ifndef IO_SHOW_FPS_OVERLAY
+#define IO_SHOW_FPS_OVERLAY 0
+#endif
+
 /**
  * Initialize the calculator-facing video and input layer.
  *
@@ -34,8 +38,9 @@ void io_shutdown(void);
 /**
  * Poll the CE keypad and update input-facing state.
  *
- * This rebuilds the keyboard matrix, updates joystick state, and tracks the
- * CLEAR key as a host-side quit request.
+ * This rebuilds the keyboard matrix, updates joystick state and cached border
+ * indicators, and tracks CLEAR as a host-side quit request. GRAPH blocks in
+ * Settings with timer 1 stopped until the user resumes or quits.
  *
  * @return false when the user requested quit; true otherwise.
  */
@@ -93,14 +98,18 @@ uint16_t io_palette_probe(uint8_t index);
  *         the requested row is outside the visible LCD crop.
  */
 uint8_t *io_text_row(int y);
-/** Publish the finished frame to the LCD-facing buffer. */
+/** End-of-frame hook; completed row compositions are already on the LCD. */
 void io_screen_refresh(void);
 /**
  * Draw or suppress the host-side FPS overlay.
  *
  * @param can_draw true when the caller permits overlay drawing this frame.
  */
+#if IO_SHOW_FPS_OVERLAY
 void io_fps_overlay(bool can_draw);
+#else
+#define io_fps_overlay(can_draw) ((void)(can_draw))
+#endif
 
 /**
  * Read one active-low C64 keyboard matrix column.

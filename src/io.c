@@ -13,9 +13,11 @@
  *   hold 2nd for BASIC symbols (/ * - + = , : " and shifted digits).
  *   Y=/Window/Zoom/Trace = F1/F3/F5/F7, X,T,theta,n = SPACE, Mode = C=,
  *   Vars = RUN/STOP, Del = DEL (2nd+Del = CLR/HOME). CLEAR quits.
+ *   GRAPH pauses for settings; the top-row function bank can be odd or even.
  */
 #include <graphx.h>
 #include <keypadc.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/timers.h>
 #include "io.h"
@@ -34,6 +36,11 @@
 static uint8_t keyboard_matrix[8];
 static uint8_t joystick2 = 0xff;
 static bool quit_requested;
+static bool indicators_enabled = true;
+static bool even_function_keys;
+static uint8_t indicator_top = 0xff;
+static uint8_t indicator_bottom = 0xff;
+static uint8_t indicator_layer = 0xff;
 
 /* Per-row framebuffer pointers (single-buffer mode draws straight into the
    visible screen; the second VRAM half is the C64's RAM). Avoids a 24-bit
@@ -75,6 +82,11 @@ void io_init(void)
     uint8_t *row = gfx_vram;
     memset(keyboard_matrix, 0xff, sizeof(keyboard_matrix));
     quit_requested = false;
+    indicators_enabled = true;
+    even_function_keys = false;
+    indicator_top = 0xff;
+    indicator_bottom = 0xff;
+    indicator_layer = 0xff;
     for (i = 0; i < LCD_H; ++i)
     {
         row_ptr[i] = row;
@@ -213,6 +225,279 @@ static void apply_map(const KeyMap *map, int count)
 
 #define MAP_COUNT(m) ((int)(sizeof(m) / sizeof((m)[0])))
 
+static void draw_key_indicator(uint8_t column, uint8_t top,
+                               const char *key, const char *action,
+                               bool pressed)
+{
+    int left = column * 64;
+    uint8_t background = pressed ? 13 : 0;
+    uint8_t row;
+
+    for (row = top; row < top + 20; ++row)
+        memset(row_ptr[row] + left, background, 64);
+    gfx_SetTextFGColor(pressed ? 0 : 1);
+    gfx_SetTextBGColor(background);
+    gfx_SetTextTransparentColor(255);
+    gfx_PrintStringXY(key, left + (64 - gfx_GetStringWidth(key)) / 2, top + 1);
+    gfx_PrintStringXY(action, left + (64 - gfx_GetStringWidth(action)) / 2,
+                      top + 11);
+}
+
+static void update_key_indicators(void)
+{
+    static const char *const top_keys[] = {
+        "Y=", "WINDOW", "ZOOM", "TRACE", "GRAPH"
+    };
+    static const char *const odd_functions[] = { "F1", "F3", "F5", "F7" };
+    static const char *const even_functions[] = { "F2", "F4", "F6", "F8" };
+    static const char *const bottom_keys[] = {
+        "2nd", "ALPHA", "MODE", "VARS", "CLEAR"
+    };
+    static const char *const bottom_actions[] = {
+        "FIRE", "ABC", "C=", "STOP", "EXIT"
+    };
+    uint8_t top = 0;
+    uint8_t bottom = 0;
+    uint8_t layer = 0;
+    uint8_t column;
+    uint8_t mask = 1;
+
+    if (!indicators_enabled)
+        return;
+
+    if (!(keyboard_matrix[0] & 0x10)) top |= 0x01;
+    if (!(keyboard_matrix[0] & 0x20)) top |= 0x02;
+    if (!(keyboard_matrix[0] & 0x40)) top |= 0x04;
+    if (!(keyboard_matrix[0] & 0x08)) top |= 0x08;
+    if (kb_IsDown(kb_KeyGraph)) top |= 0x10;
+    if (kb_IsDown(kb_Key2nd)) bottom |= 0x01;
+    if (kb_IsDown(kb_KeyAlpha)) bottom |= 0x02;
+    if (!(keyboard_matrix[7] & 0x20)) bottom |= 0x04;
+    if (!(keyboard_matrix[7] & 0x80)) bottom |= 0x08;
+    if (kb_IsDown(kb_KeyClear)) bottom |= 0x10;
+    if (bottom & 0x01)
+        layer = 1;
+    else if (even_function_keys || !(keyboard_matrix[1] & 0x80))
+        layer = 2;
+
+    if (top == indicator_top && bottom == indicator_bottom &&
+        layer == indicator_layer)
+        return;
+
+    gfx_SetTextScale(1, 1);
+    for (column = 0; column < 5; ++column)
+    {
+        if (((top ^ indicator_top) & mask) || layer != indicator_layer)
+        {
+            const char *action = "MENU";
+            if (column < 4)
+                action = layer == 1 ? "--" :
+                         (layer == 2 ? even_functions[column] : odd_functions[column]);
+            draw_key_indicator(column, 0, top_keys[column], action,
+                               (top & mask) != 0);
+        }
+        if (indicator_bottom == 0xff || ((bottom ^ indicator_bottom) & mask))
+            draw_key_indicator(column, 220, bottom_keys[column],
+                               bottom_actions[column], (bottom & mask) != 0);
+        mask += mask;
+    }
+    gfx_SetTextFGColor(1);
+    gfx_SetTextBGColor(0);
+    indicator_top = top;
+    indicator_bottom = bottom;
+    indicator_layer = layer;
+}
+
+#define SETTINGS_LEFT 48
+#define SETTINGS_TOP 76
+#define SETTINGS_WIDTH 224
+#define SETTINGS_HEIGHT 88
+
+static void draw_settings_menu(uint8_t selected)
+{
+    static const char *const labels[] = {
+        "Resume", "Key indicators", "Function keys", "Quit emulator"
+    };
+    uint8_t entry;
+
+    gfx_SetTextScale(1, 1);
+    gfx_SetTextTransparentColor(255);
+    gfx_SetColor(0);
+    gfx_FillRectangle_NoClip(SETTINGS_LEFT, SETTINGS_TOP,
+                            SETTINGS_WIDTH, SETTINGS_HEIGHT);
+    gfx_SetColor(12);
+    gfx_Rectangle_NoClip(SETTINGS_LEFT, SETTINGS_TOP,
+                        SETTINGS_WIDTH, SETTINGS_HEIGHT);
+    gfx_SetTextFGColor(1);
+    gfx_SetTextBGColor(0);
+    gfx_PrintStringXY("Settings", SETTINGS_LEFT + 12, SETTINGS_TOP + 7);
+    gfx_SetTextFGColor(15);
+    gfx_PrintStringXY("PAUSED",
+                      SETTINGS_LEFT + SETTINGS_WIDTH - 12 - gfx_GetStringWidth("PAUSED"),
+                      SETTINGS_TOP + 7);
+
+    for (entry = 0; entry < 4; ++entry)
+    {
+        uint8_t top = SETTINGS_TOP + 24 + entry * 14;
+        uint8_t background = entry == selected ? 13 : 0;
+        const char *value = NULL;
+
+        gfx_SetColor(background);
+        gfx_FillRectangle_NoClip(SETTINGS_LEFT + 8, top - 2,
+                                SETTINGS_WIDTH - 16, 12);
+        gfx_SetTextBGColor(background);
+        gfx_SetTextFGColor(entry == selected ? 0 : 1);
+        gfx_PrintStringXY(labels[entry], SETTINGS_LEFT + 12, top);
+        if (entry == 1)
+            value = indicators_enabled ? "[x]" : "[ ]";
+        else if (entry == 2)
+            value = even_function_keys ? "F2/4/6/8" : "F1/3/5/7";
+        if (value)
+            gfx_PrintStringXY(value,
+                              SETTINGS_LEFT + SETTINGS_WIDTH - 12 - gfx_GetStringWidth(value),
+                              top);
+    }
+}
+
+static void wait_for_key_release(void)
+{
+    do
+    {
+        kb_Scan();
+    }
+    while (kb_AnyKey());
+}
+
+static void __attribute__((noinline)) show_settings_menu(void)
+{
+    bool timer_was_running = (timer_Control & 1u) != 0;
+    uint8_t *saved_pixels;
+    uint8_t *saved_row;
+    uint8_t row;
+    uint8_t selected = 0;
+    bool key_held = false;
+    bool redraw = true;
+    bool finished = false;
+
+    timer_Disable(1);
+    saved_pixels = malloc(SETTINGS_WIDTH * SETTINGS_HEIGHT);
+    wait_for_key_release();
+
+    if (saved_pixels)
+    {
+        saved_row = saved_pixels;
+        for (row = SETTINGS_TOP; row < SETTINGS_TOP + SETTINGS_HEIGHT; ++row)
+        {
+            memcpy(saved_row, row_ptr[row] + SETTINGS_LEFT, SETTINGS_WIDTH);
+            saved_row += SETTINGS_WIDTH;
+        }
+
+        while (!finished)
+        {
+            if (redraw)
+            {
+                draw_settings_menu(selected);
+                redraw = false;
+            }
+            kb_Scan();
+            if (!kb_AnyKey())
+            {
+                key_held = false;
+                continue;
+            }
+            if (key_held)
+                continue;
+            key_held = true;
+
+            if (kb_IsDown(kb_KeyGraph))
+                finished = true;
+            else if (kb_IsDown(kb_KeyClear))
+            {
+                quit_requested = true;
+                finished = true;
+            }
+            else if (kb_IsDown(kb_KeyUp) && selected > 0)
+            {
+                --selected;
+                redraw = true;
+            }
+            else if (kb_IsDown(kb_KeyDown) && selected < 3)
+            {
+                ++selected;
+                redraw = true;
+            }
+            else if (kb_IsDown(kb_KeyEnter) || kb_IsDown(kb_KeyLeft) ||
+                     kb_IsDown(kb_KeyRight))
+            {
+                if (selected == 0 && kb_IsDown(kb_KeyEnter))
+                    finished = true;
+                else if (selected == 1)
+                {
+                    if (kb_IsDown(kb_KeyLeft))
+                        indicators_enabled = false;
+                    else if (kb_IsDown(kb_KeyRight))
+                        indicators_enabled = true;
+                    else
+                        indicators_enabled = !indicators_enabled;
+                    redraw = true;
+                }
+                else if (selected == 2)
+                {
+                    if (kb_IsDown(kb_KeyLeft))
+                        even_function_keys = false;
+                    else if (kb_IsDown(kb_KeyRight))
+                        even_function_keys = true;
+                    else
+                        even_function_keys = !even_function_keys;
+                    redraw = true;
+                }
+                else if (selected == 3 && kb_IsDown(kb_KeyEnter))
+                {
+                    quit_requested = true;
+                    finished = true;
+                }
+            }
+        }
+
+        wait_for_key_release();
+        saved_row = saved_pixels;
+        for (row = SETTINGS_TOP; row < SETTINGS_TOP + SETTINGS_HEIGHT; ++row)
+        {
+            memcpy(row_ptr[row] + SETTINGS_LEFT, saved_row, SETTINGS_WIDTH);
+            saved_row += SETTINGS_WIDTH;
+        }
+        free(saved_pixels);
+    }
+    else
+    {
+        memset(row_ptr[220], 0, LCD_W * 20);
+        gfx_SetTextScale(1, 1);
+        gfx_SetTextFGColor(1);
+        gfx_SetTextBGColor(0);
+        gfx_SetTextTransparentColor(255);
+        gfx_PrintStringXY("Menu unavailable: not enough memory", 4, 226);
+        do
+        {
+            kb_Scan();
+        }
+        while (!kb_AnyKey());
+        if (kb_IsDown(kb_KeyClear))
+            quit_requested = true;
+        wait_for_key_release();
+    }
+
+    memset(row_ptr[0], 0, LCD_W * 20);
+    memset(row_ptr[220], 0, LCD_W * 20);
+    indicator_top = 0xff;
+    indicator_bottom = 0xff;
+    indicator_layer = 0xff;
+    gfx_SetTextFGColor(1);
+    gfx_SetTextBGColor(0);
+    kb_SetMode(MODE_3_CONTINUOUS);
+    if (timer_was_running)
+        timer_Control |= 1u;
+}
+
 bool io_emulate(void)
 {
     /* Rescan the keypad at a real-time 60 Hz (546 ticks of the 32 kHz timer
@@ -220,6 +505,7 @@ bool io_emulate(void)
        taps register no matter how slow the emulated frame rate is. */
     static unsigned int last_scan_ticks;
     static bool continuous;
+    bool keys_changed = false;
     unsigned int now = (unsigned int)timer_Get(1);
 
     if (now - last_scan_ticks < 546)
@@ -236,15 +522,26 @@ bool io_emulate(void)
     }
 
     memset(keyboard_matrix, 0xff, sizeof(keyboard_matrix));
+    joystick2 = 0xff;
 
     if (kb_IsDown(kb_KeyClear))
         quit_requested = true;
+
+    if (!quit_requested && kb_IsDown(kb_KeyGraph))
+    {
+        update_key_indicators();
+        show_settings_menu();
+        update_key_indicators();
+        return !quit_requested;
+    }
 
     if (kb_IsDown(kb_Key2nd))
         apply_map(snd_map, MAP_COUNT(snd_map));
     else
     {
         apply_map(base_map, MAP_COUNT(base_map));
+        if (even_function_keys && (keyboard_matrix[0] & 0x78) != 0x78)
+            keyboard_matrix[1] &= (uint8_t)~0x80;
         if (kb_IsDown(kb_KeyAlpha))
             apply_map(alpha_map, MAP_COUNT(alpha_map));
         else
@@ -271,9 +568,15 @@ bool io_emulate(void)
             memcpy(prev_matrix, keyboard_matrix, sizeof(prev_matrix));
             prev_joy = joystick2;
             vic_request_render();
+            keys_changed = true;
         }
     }
 
+    if (indicators_enabled &&
+        (keys_changed || indicator_layer == 0xff ||
+         (kb_IsDown(kb_KeyAlpha) != 0) != ((indicator_bottom & 0x02) != 0) ||
+         (kb_IsDown(kb_KeyClear) != 0) != ((indicator_bottom & 0x10) != 0)))
+        update_key_indicators();
     return !quit_requested;
 }
 
@@ -355,10 +658,11 @@ void io_screen_refresh(void)
     /* Single-buffered, palette loaded once in io_init: nothing to do. */
 }
 
+#if IO_SHOW_FPS_OVERLAY
 /* Emulated-frames-per-second overlay (50 = full PAL speed). Counts every
-   VIC frame wrap; the digits reformat once per real second (32 kHz timer 1)
-   and are redrawn after every rendered frame, because the frame repaint
-   erases them. No sprintf (IX-clobber lore). */
+    VIC frame wrap; the digits reformat once per real second (32 kHz timer 1)
+    and are redrawn after every rendered frame, because the frame repaint
+    erases them. No sprintf (IX-clobber lore). */
 void io_fps_overlay(bool can_draw)
 {
     static unsigned int last_ticks;
@@ -381,10 +685,11 @@ void io_fps_overlay(bool can_draw)
         frames = 0;
         last_ticks = now;
     }
-    if (!can_draw)
+    if (!can_draw || indicators_enabled)
         return;
     gfx_SetTextFGColor(1);        /* white on opaque black, in the top    */
     gfx_SetTextBGColor(0);        /* letterbox band so it barely overlaps */
     gfx_SetTextTransparentColor(255);
     gfx_PrintStringXY(text, LCD_W - gfx_GetStringWidth(text) - 2, 2);
 }
+#endif

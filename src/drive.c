@@ -13,6 +13,7 @@
 #include "memory.h"
 #include "vic.h"
 #include "CEPackage.h"
+#include "crc32.h"
 
 /* DSK payload layout (see tools/d64_to_appvar.py):
    u8 count, then count * 22-byte entries { name[16] PETSCII $A0-padded,
@@ -40,15 +41,25 @@ static uint8_t selected_file;
 static uint8_t autostart_done;
 static unsigned int unhide_frame; /* frame at which to lift the hidden boot */
 static bool ready_pc_detect;     /* KERNAL wait-loop bytes verified */
+static DriveIdentity disk_identity;
+static bool identity_valid;
 
 DriveTrace drive_trace[DRIVE_TRACE_MAX];
 uint8_t drive_trace_count;
+
+void drive_invalidate(void)
+{
+    disk_dir = NULL;
+    disk_size = 0;
+    selected_file = 0xff;
+    identity_valid = false;
+}
 
 bool drive_init(void)
 {
     uint8_t count;
 
-    selected_file = 0xff;
+    drive_invalidate();
     disk_size = CEPackageSize(CE_PACKAGE_DISK);
     if (!disk_size)
         return false;
@@ -65,9 +76,13 @@ bool drive_init(void)
     count = disk_dir[0];
     if (!count || 1 + (uint32_t)count * DIR_ENTRY_SIZE > disk_size)
     {
-        disk_size = 0;
+        drive_invalidate();
         return false;
     }
+    autostart_done = 0;
+    unhide_frame = 0;
+    ready_pc_detect = false;
+    drive_trace_count = 0;
     return true;
 }
 
@@ -89,7 +104,13 @@ int drive_file_name(uint8_t index, char *buffer, uint8_t bufferSize)
     for (i = 0; i < DIR_NAME_LEN && i + 1 < bufferSize; ++i)
     {
         uint8_t c = entry[i];
-        buffer[i] = (c == 0xa0) ? ' ' : (char)c;
+        if (c == 0xa0)
+            c = ' ';
+        else if (c >= 0xc1 && c <= 0xda)
+            c -= 0x80;
+        else if (c < 0x20 || c > 0x7e)
+            c = '?';
+        buffer[i] = (char)c;
     }
     while (i > 0 && buffer[i - 1] == ' ')
         --i;
@@ -104,7 +125,7 @@ void drive_select_file(uint8_t index)
 
 void drive_disable(void)
 {
-    disk_size = 0; /* no autoload; trapped LOADs answer DEVICE NOT PRESENT */
+    drive_invalidate();
 }
 
 void drive_patch_kernal(void)
@@ -128,6 +149,57 @@ void drive_patch_kernal(void)
 static uint32_t read24(const uint8_t *p)
 {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+}
+
+bool drive_file_info(uint8_t index, DriveFileInfo *info)
+{
+    const uint8_t *entry;
+    const uint8_t *low;
+    const uint8_t *high;
+    uint32_t offset;
+    uint32_t size;
+    if (!info || !disk_size || index >= drive_file_count())
+        return false;
+    entry = disk_dir + 1 + (uint32_t)index * DIR_ENTRY_SIZE;
+    offset = read24(entry + DIR_NAME_LEN);
+    size = read24(entry + DIR_NAME_LEN + 3);
+    if (offset < 1 + (uint32_t)drive_file_count() * DIR_ENTRY_SIZE ||
+        offset > disk_size || size < 2 || size > disk_size - offset)
+        return false;
+    low = CEPackageChunkPtr(CE_PACKAGE_DISK, offset, disk_size);
+    high = CEPackageChunkPtr(CE_PACKAGE_DISK, offset + 1, disk_size);
+    if (!low || !high)
+        return false;
+    drive_file_name(index, info->name, sizeof(info->name));
+    info->size = size;
+    info->load_address = (uint16_t)*low | ((uint16_t)*high << 8);
+    return true;
+}
+
+bool drive_identity(DriveIdentity *identity)
+{
+    uint32_t offset;
+    uint32_t crc = 0;
+    if (!identity || !disk_size || !disk_dir)
+        return false;
+    if (!identity_valid)
+    {
+        for (offset = 0; offset < disk_size; offset += CHUNK_PAYLOAD)
+        {
+            uint32_t remaining = disk_size - offset;
+            size_t length = remaining > CHUNK_PAYLOAD ? CHUNK_PAYLOAD : remaining;
+            const uint8_t *data = CEPackageGetDirectChunk(
+                CE_PACKAGE_DISK, (uint8_t)(offset / CHUNK_PAYLOAD), disk_size);
+            if (!data)
+                return false;
+            crc = crc32_update(crc, data, length);
+        }
+        disk_identity.size = disk_size;
+        disk_identity.crc32 = crc;
+        identity_valid = true;
+    }
+    *identity = disk_identity;
+    return true;
 }
 
 /* One byte of the disk payload (offsets can straddle chunk boundaries). */
