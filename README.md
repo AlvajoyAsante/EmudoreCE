@@ -1,6 +1,7 @@
-# EMUDORE
+# <img src="icon.png" alt="AMUDORE CE icon" width="128" height="128" />
+# AMUDORE CE
 
-EMUDORE is a Commodore 64 emulator for the TI-84 Plus CE, built around a portable C core with CE-specific I/O, ROM packaging, and a native JIT path for the eZ80 target. The project aims to preserve the behavior of classic C64 software while staying within TI-OS memory and runtime constraints.
+Emudore CE is a Commodore 64 emulator for the TI-84 Plus CE, built around a portable C core with CE-specific I/O, ROM packaging, and a native JIT path for the eZ80 target. The project aims to preserve the behavior of classic C64 software while staying within TI-OS memory and runtime constraints.
 
 The emulator currently includes:
 
@@ -33,6 +34,13 @@ The most relevant project docs are:
 - TI-84+ CE input mapping, graphics integration, and menu settings
 - Performance profiles for release, CPU-hot diagnostics, and frame-skip control
 - Host and CEmu regression tests covering browser, I/O, VIC, drive, and JIT behavior
+
+## Screenshots
+
+|  |  |  |
+| --- | --- | --- |
+| ![Demo 1](docs/screenshots/demo%201.png) <br> Demo 1 | ![Demo 2](docs/screenshots/demo%202.png) <br> Demo 2 | ![Demo 3](docs/screenshots/demo%203.png) <br> Demo 3 |
+| ![Parallax](docs/screenshots/paralax.png) <br> Parallax | ![Pac-Man](docs/screenshots/packman.png) <br> Pac-Man |  |
 
 ## Controls and settings
 
@@ -136,17 +144,6 @@ make PROFILE=1
 
 The release image is `bin/EMUDORE.8xp`; the profiling build is in `bin/profile`. The profile binary reports sampled emulated/render FPS, frame timings, and the relevant hot-path details after emulation exits. The memory-limited startup path and compressed-image constraints are described in [docs/startup-memory.md](docs/startup-memory.md).
 
-## Screenshots
-
-|  |  |  |
-| --- | --- | --- |
-| ![Demo 1](docs/screenshots/demo%201.png) <br> Demo 1 | ![Demo 2](docs/screenshots/demo%202.png) <br> Demo 2 | ![Demo 3](docs/screenshots/demo%203.png) <br> Demo 3 |
-| ![Parallax](docs/screenshots/paralax.png) <br> Parallax | ![Pac-Man](docs/screenshots/packman.png) <br> Pac-Man |  |
-
-## Notes
-
-This repository is actively used as a CE-targeted emulator project rather than a generic documentation stub. The current build and test expectations are documented in the files above, and the README is intended as a quick-entry guide rather than a full historical essay.
-
 ## Normal and Calculator-Oriented Conversion
 
 The existing `roms`, `cart`, `files`, and `disk` commands retain their package
@@ -192,10 +189,6 @@ make
 ```
 
 This prepares the ROMs, software files, and disk assets before building the emulator itself.
-
-## Version
-
-Current version: 0.1.0-alpha
 
 ## Credits
 
