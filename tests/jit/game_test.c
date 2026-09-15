@@ -702,6 +702,27 @@ static void game_dump_jit_cache(void)
     }
 }
 
+static void game_dump_jit_guards(unsigned int frame)
+{
+    enum { JIT_BLOCK_COUNT = 16, JIT_BLOCK_STRIDE = 586, JIT_CODE_SIZE = 4, JIT_READY = 5,
+           JIT_INELIGIBLE = 6, JIT_BLACKLISTED = 7, JIT_NATIVE = 72, JIT_NATIVE_END = 585 };
+    uint32_t blocks_address = symbol_address("_jit_blocks");
+    unsigned int slot;
+    for (slot = 0; slot < JIT_BLOCK_COUNT; ++slot)
+    {
+        uint32_t block = blocks_address + slot * JIT_BLOCK_STRIDE;
+        uint8_t first = mem_peek_byte(block + JIT_NATIVE);
+        uint8_t last = mem_peek_byte(block + JIT_NATIVE_END);
+        if ((first == 0x5a && last == 0xa5) || (!first && !last))
+            continue;
+        printf("JIT_GUARD frame=%u slot=%u pc=%04x size=%u ready=%u ineligible=%u blacklisted=%u first=%02x last=%02x\n",
+               frame, slot, mem_peek_byte(block) | (mem_peek_byte(block + 1) << 8),
+               mem_peek_byte(block + JIT_CODE_SIZE), mem_peek_byte(block + JIT_READY),
+               mem_peek_byte(block + JIT_INELIGIBLE), mem_peek_byte(block + JIT_BLACKLISTED),
+               first, last);
+    }
+}
+
 static uint32_t game_query(const char *name, uint32_t argument, bool byte_result)
 {
     uint8_t saved_registers[sizeof(cpu.registers)];
@@ -756,6 +777,7 @@ static void game_run(unsigned int limit)
     uint8_t boundary_opcode, return_opcode = 0;
     unsigned int frame = game_checkpoint.frame, since_frame = 0;
     unsigned int changed_frames = game_checkpoint.changed, nonblank_frames = game_checkpoint.nonblank;
+    unsigned int previous_mismatches = mem_peek_long(mismatches_address);
     unsigned int ram_code_frames = 0;
     uint8_t previous[320 * 200] = {0}, visible[320 * 200];
     char record_path[512];
@@ -874,6 +896,7 @@ static void game_run(unsigned int limit)
             uint16_t guest_pc = (uint16_t)mem_peek_long(state_address);
             uint32_t code_page = mem_peek_long(symbol_address("_mem_rd_pg") + (guest_pc >> 8) * 4);
             uint32_t completed = game_query("_vic_frames", 0, false) + (before_count ? 1u : 0u);
+            unsigned int mismatches = mem_peek_long(mismatches_address);
             uint8_t joystick = (uint8_t)game_query("_io_joystick2", 0, true);
             if (completed != frame + 1) fail("non-monotonic target VIC frame count");
             frame = completed;
@@ -895,7 +918,7 @@ static void game_run(unsigned int limit)
                     (unsigned long)mem_peek_long(state_address + 13),
                     (unsigned long)mem_peek_long(hits_address), (unsigned long)mem_peek_long(observations_address),
                     mem_peek_byte(cached_address), mem_peek_byte(ready_address), mem_peek_byte(ineligible_address),
-                    (unsigned long)mem_peek_long(mismatches_address), mem_peek_byte(loads_address), colors,
+                    (unsigned long)mismatches, mem_peek_byte(loads_address), colors,
                     (unsigned long)game_hash(visible, sizeof(visible)),
                     (unsigned long)game_hash(guest_ram, sizeof(guest_ram)),
                     mem_peek_byte(symbol_address("_jit_backend_ok")), (unsigned long)game_input_mask, joystick);
@@ -907,8 +930,13 @@ static void game_run(unsigned int limit)
                        (unsigned long)mem_peek_long(state_address + 13),
                       (unsigned long)mem_peek_long(hits_address), (unsigned long)mem_peek_long(observations_address),
                       mem_peek_byte(cached_address), mem_peek_byte(ready_address), mem_peek_byte(ineligible_address),
-                      (unsigned long)mem_peek_long(mismatches_address), mem_peek_byte(loads_address),
+                      (unsigned long)mismatches, mem_peek_byte(loads_address),
                        colors, (unsigned long)game_hash(visible, sizeof(visible)), joystick);
+            }
+            if (mismatches != previous_mismatches)
+            {
+                game_dump_jit_guards(frame);
+                previous_mismatches = mismatches;
             }
             if (frame == 1 || frame % 60 == 0 || frame == limit) game_bitmap(frame);
             if (frame == limit) break;
