@@ -42,6 +42,16 @@ merely because their code compiles.
 - Do not introduce additional agents unless authorized. Parallel research is
   possible; edits to the emitter, bridges and dispatcher must be serialized.
 
+## Active Game-Crash Investigation
+
+The 10K target escape and the input-sensitive Parallax campaign are tracked in
+[JIT game crash investigation](jit-game-crash-investigation.md). Consult that
+record before changing JIT dispatch, generated-code entry, cache indexing, or
+assembly re-entry. It includes the reproducible 10K command, evidence from
+rejected probes, the paired Parallax held/released control procedure, and the
+required post-fix validation sequence. Neither issue is considered resolved
+by synthetic JIT tests or no-input startup alone.
+
 ## Phase 1 Result (2026-09-13)
 
 Hypothesis: the existing cache counters can distinguish poor block discovery
