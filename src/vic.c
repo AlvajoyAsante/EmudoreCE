@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/timers.h>
 #include "vic.h"
+#include "vblank.h"
 #include "vic_char.h"
 #include "perf.h"
 #include "cpu.h"
@@ -44,6 +45,8 @@ static uint8_t bgcolor[4];
 /* cpu sync */
 unsigned int vic_raster_due;
 static unsigned int frame_count;
+static unsigned int rendered_frame_count;
+static VBlankPacer frame_pacer;
 /* control registers */
 static uint8_t cr1, cr2;
 static uint8_t raster_c;
@@ -68,10 +71,13 @@ extern void vic_expand_mc_row(void);
 static bool hires_asm_ready;
 static bool mc_asm_ready;
 static bool char_asm_ready;
-static const bool hires_asm_enabled = true;
+static bool row_asm_enabled;
 
 /* Returns a bitmask: bit0 = hires bitmap, bit1 = MC bitmap, bit2 = character
     rows. Each failing kernel independently falls back to C. */
+#if defined(__clang__)
+__attribute__((__minsize__))
+#endif
 uint8_t vic_row_asm_selftest(void)
 {
     enum { GUARD_SIZE = 16, GUARD_VALUE = 0xa5 };
@@ -166,18 +172,14 @@ uint8_t vic_asm_status(void)
    the pixel drawing (the bulk of the per-line cost) is skipped. */
 static bool render_frame;
 static bool render_requested; /* set by io on key change: render next frame */
+static uint8_t cpu_turbo_multiplier;
+static bool cpu_turbo_adaptive;
+static unsigned int adaptive_frame_start_ticks;
+static bool frame_skip_enabled;
+static bool render_suppressed;
 
-/* Display pacing knobs (wall-clock timer 1 runs at 32768 Hz).
-    Keep parity alternation below so frame-toggled sprite blink effects remain
-    visible instead of phase-locking to a fixed sample cadence. */
-#ifndef RENDER_TARGET_FPS
-#define RENDER_TARGET_FPS 20u
-#endif
-#ifndef RENDER_MIN_FRAME_GAP
-#define RENDER_MIN_FRAME_GAP 2u
-#endif
-#ifndef RENDER_BOOT_SKIP_MASK
-#define RENDER_BOOT_SKIP_MASK 7u /* render 1 in 8 frames during warm-up */
+#ifndef TURBO_ADAPTIVE_TARGET_FPS
+#define TURBO_ADAPTIVE_TARGET_FPS 6u
 #endif
 
 #ifndef NDEBUG
@@ -220,6 +222,45 @@ void vic_request_render(void)
     render_requested = true;
 }
 
+void vic_set_cpu_turbo(uint8_t multiplier)
+{
+    cpu_turbo_adaptive = false;
+    cpu_turbo_multiplier = multiplier > 200 ? 200 : multiplier;
+    if (cpu_turbo_multiplier == 0)
+        cpu_turbo_multiplier = 1;
+}
+
+void vic_set_cpu_turbo_adaptive(bool enabled)
+{
+    cpu_turbo_adaptive = enabled;
+    adaptive_frame_start_ticks = 0;
+    if (enabled)
+        cpu_turbo_multiplier = 1;
+}
+
+void vic_set_render_suppressed(bool enabled)
+{
+    render_suppressed = enabled;
+    if (enabled)
+        render_frame = false;
+}
+
+void vic_set_frame_skip(bool enabled)
+{
+    frame_skip_enabled = enabled;
+    vblank_reset(&frame_pacer, (uint32_t)timer_Get(1));
+    if (!enabled)
+    {
+        render_frame = true;
+        render_requested = true;
+    }
+}
+
+bool vic_frame_skip_enabled(void)
+{
+    return frame_skip_enabled;
+}
+
 /* Hidden boot: suppress all rendering while the KERNAL boots and the disk
    autoload types LOAD/RUN. drive.c lifts it once the program is running;
    a frame-cap safety in vic_emulate prevents a permanently black screen. */
@@ -241,6 +282,9 @@ VicWriteTrace vic_wtrace[VIC_WTRACE_MAX];
 uint8_t vic_wtrace_pos;
 
 /* Cold diagnostics for main(): copy of the display configuration. */
+#if defined(__clang__)
+__attribute__((__minsize__))
+#endif
 void vic_debug_snapshot(VicDebug *d)
 {
     int i;
@@ -273,6 +317,9 @@ void vic_debug_snapshot(VicDebug *d)
     d->vic_base = cia2_vic_base_address();
 }
 
+#if defined(__clang__)
+__attribute__((__minsize__))
+#endif
 void vic_reset(void)
 {
     int i;
@@ -293,8 +340,16 @@ void vic_reset(void)
     bgcolor[0] = bgcolor[1] = bgcolor[2] = bgcolor[3] = 0;
     cr1 = cr2 = 0;
     frame_count = 0;
+    rendered_frame_count = 0;
+    vblank_reset(&frame_pacer, (uint32_t)timer_Get(1));
     render_frame = true;
     render_requested = false;
+    cpu_turbo_multiplier = 1;
+    cpu_turbo_adaptive = false;
+    adaptive_frame_start_ticks = 0;
+    frame_skip_enabled = true;
+    render_suppressed = false;
+    row_asm_enabled = true;
     boot_hidden = false;
     screen_mem = ADDR_SCREEN;
     char_mem = ADDR_CHARS;
@@ -532,7 +587,7 @@ static void draw_raster_char_mode(void)
     else
         chardata = mem_host_ptr((uint16_t)addr);
 
-    if (char_asm_ready && graphic_mode != GM_EXT_BG)
+    if (row_asm_enabled && char_asm_ready && graphic_mode != GM_EXT_BG)
     {
         vic_char_set_colors(bgcolor[0], bgcolor[1], bgcolor[2]);
         vic_char_dst = dst0 + xs;
@@ -674,7 +729,7 @@ static void draw_raster_bitmap_mode(void)
 
     lut[0] = bgcolor[0];
 
-    if (!xs && bmp && hires_asm_enabled)
+    if (!xs && bmp && row_asm_enabled)
     {
         if (!mc && hires_asm_ready)
         {
@@ -765,7 +820,7 @@ static void draw_char_row(int rstr)
     uint8_t *rows[8];
     bool ecm = (graphic_mode == GM_EXT_BG);
     bool mcm = (graphic_mode == GM_MC_CHAR);
-    bool kernel_rows = char_asm_ready && !ecm;
+    bool kernel_rows = row_asm_enabled && char_asm_ready && !ecm;
 
     for (k = 0; k < 8; ++k)
     {
@@ -1096,7 +1151,7 @@ static void process_line(int rstr)
        the LCD edges are cropped, so every other line skips straight to
        sprite state upkeep. */
     bool in_window = (rstr >= VIC_G_FIRST_LINE && rstr < VIC_G_LAST_LINE);
-    bool draw = render_frame && in_window;
+    bool draw = in_window && (render_frame || sprites_require_catchup(rstr));
 
     if (draw)
     {
@@ -1137,8 +1192,10 @@ static void process_line(int rstr)
     /* sprite state advances EVERY line (even unrendered frames) so
        multiplexer arming stays in sync; pixels only when rendering */
     sprite_tick(rstr, draw);
-    if (draw)
+    if (draw && render_frame)
         commit_row_composition();
+    else
+        composed_count = 0;
 }
 
 static void flush_lines(int upto)
@@ -1146,6 +1203,11 @@ static void flush_lines(int upto)
     unsigned long sample_start;
     if (pending_line >= upto)
         return;
+    if (render_suppressed)
+    {
+        pending_line = upto;
+        return;
+    }
     sample_start = perf_render_begin();
     /* Sprites idle = none enabled and none mid-display: sprite_tick is a
        no-op for every line, so line spans with no pixel work are skipped
@@ -1244,6 +1306,70 @@ static void raster_irq_check(void)
     }
 }
 
+#if defined(__clang__)
+__attribute__((__minsize__, noinline))
+#endif
+static void vic_vblank(void)
+{
+    bool was_rendered = render_frame;
+    uint32_t now;
+#ifndef NDEBUG
+    unsigned int started = (unsigned int)timer_Get(1);
+#endif
+    flush_lines(VIC_SCREEN_LINES);
+    pending_line = 0;
+    if (was_rendered)
+        ++rendered_frame_count;
+    io_screen_refresh();
+    io_refresh_vram_view();
+    perf_frame_complete(was_rendered, boot_hidden);
+#ifndef NDEBUG
+    vic_prof[0] += (unsigned int)(timer_Get(1) - started);
+    if (was_rendered)
+        vic_prof[2]++;
+#endif
+    ++frame_count;
+    now = (uint32_t)timer_Get(1);
+    if (cpu_turbo_adaptive)
+    {
+        unsigned int elapsed = (unsigned int)now - adaptive_frame_start_ticks;
+        if (adaptive_frame_start_ticks != 0 && elapsed != 0)
+        {
+            unsigned int multiplier =
+                cpu_turbo_multiplier * (32768u / TURBO_ADAPTIVE_TARGET_FPS) / elapsed;
+            if (multiplier == 0)
+                multiplier = 1;
+            if (multiplier > 200)
+                multiplier = 200;
+            cpu_turbo_multiplier = (uint8_t)multiplier;
+        }
+        adaptive_frame_start_ticks = (unsigned int)now;
+    }
+    if (vblank_advance(&frame_pacer, now,
+                      cpu_turbo_multiplier == 1 && !cpu_turbo_adaptive && !boot_hidden,
+                      frame_skip_enabled, render_requested))
+    {
+        while ((int32_t)((uint32_t)timer_Get(1) - frame_pacer.deadline) < 0)
+        {
+        }
+    }
+    render_frame = frame_pacer.render;
+    if (render_suppressed)
+    {
+        render_frame = false;
+        io_refresh_debug_view();
+    }
+    if (boot_hidden)
+    {
+        render_frame = false;
+        if (frame_count >= 900)
+            boot_hidden = false;
+    }
+    render_requested = false;
+    io_fps_overlay(was_rendered && !boot_hidden);
+    set_raster_counter(0);
+}
+
 bool vic_emulate(void)
 {
     /* re-raise interrupt if there are unacknowledged ones (inline check of
@@ -1259,75 +1385,16 @@ bool vic_emulate(void)
         if (sprite_enabled && sprites_require_catchup(rstr))
             flush_lines(rstr + 1);
 
-        vic_raster_due += is_bad_line() ? VIC_BAD_LINE_CYCLES : VIC_LINE_CYCLES;
+        {
+            unsigned int line_cycles = is_bad_line()
+                ? VIC_BAD_LINE_CYCLES : VIC_LINE_CYCLES;
+            vic_raster_due += line_cycles;
+            vic_raster_due += line_cycles * (cpu_turbo_multiplier - 1u);
+        }
 
         set_raster_counter(++rstr);
         if (rstr >= VIC_SCREEN_LINES)
-        {
-            bool was_rendered = render_frame; /* this frame reached VRAM */
-#ifndef NDEBUG
-            unsigned int t0 = (unsigned int)timer_Get(1);
-#endif
-            flush_lines(VIC_SCREEN_LINES);
-            pending_line = 0;
-            io_screen_refresh();
-            perf_frame_complete(was_rendered, boot_hidden);
-#ifndef NDEBUG
-            vic_prof[0] += (unsigned int)(timer_Get(1) - t0);
-            if (was_rendered)
-                vic_prof[2]++;
-#endif
-            frame_count++;
-#if EMUDORE_FRAME_SKIP
-            /* Wall-clock frame pacing (timer 1 = 32 kHz). The
-               render is committed on ALTERNATING emulated frame parity:
-               games blink sprites by toggling them every frame, and a
-               fixed-phase sampler can lock onto the "off" phases, making
-               blinking sprites permanently invisible on the LCD. */
-            if (frame_count < 300)
-                render_frame = render_requested ||
-                               ((frame_count & RENDER_BOOT_SKIP_MASK) == 0);
-            else
-            {
-                static unsigned int last_render_ticks;
-                static unsigned int last_render_frame;
-                static bool render_pending;
-                static uint8_t render_parity;
-                unsigned int now = (unsigned int)timer_Get(1);
-                if (render_requested ||
-                    now - last_render_ticks >= 32768u / RENDER_TARGET_FPS)
-                {
-                    render_pending = true;
-                    last_render_ticks = now;
-                }
-                render_frame = false;
-                /* Keep a minimum emulated-frame gap so drawing does not fully
-                   starve emulation when scenes are expensive. Key-press
-                   renders (render_requested) bypass the spacing. */
-                if (render_pending &&
-                    (uint8_t)(frame_count & 1u) == render_parity &&
-                    (render_requested ||
-                     frame_count - last_render_frame >= RENDER_MIN_FRAME_GAP))
-                {
-                    render_frame = true;
-                    render_pending = false;
-                    last_render_frame = frame_count;
-                    render_parity ^= 1;
-                }
-            }
-#else
-            render_frame = true;
-#endif
-            if (boot_hidden)
-            {
-                render_frame = false;
-                if (frame_count >= 900) /* autoload never happened: give up */
-                    boot_hidden = false;
-            }
-            render_requested = false;
-            io_fps_overlay(was_rendered && !boot_hidden);
-            set_raster_counter(0);
-        }
+            vic_vblank();
 
         /* Raster IRQ fires at the START of the target line: the handler's
            register writes (sprite multiplex, scroll splits) run during this
@@ -1414,6 +1481,46 @@ uint8_t vic_read_register(uint8_t r)
     return retval;
 }
 
+uint8_t vic_peek_register(uint8_t r)
+{
+    uint8_t retval;
+
+    switch (r)
+    {
+    case 0x0: case 0x2: case 0x4: case 0x6:
+    case 0x8: case 0xa: case 0xc: case 0xe: retval = mx[r >> 1]; break;
+    case 0x1: case 0x3: case 0x5: case 0x7:
+    case 0x9: case 0xb: case 0xd: case 0xf: retval = my[r >> 1]; break;
+    case 0x10: retval = msbx; break;
+    case 0x11: retval = cr1; break;
+    case 0x12: retval = raster_c; break;
+    case 0x15: retval = sprite_enabled; break;
+    case 0x16: retval = cr2; break;
+    case 0x17: retval = sprite_double_height; break;
+    case 0x18: retval = mem_pointers; break;
+    case 0x19:
+        retval = (uint8_t)(0xf & irq_status);
+        if (retval != 0) retval |= 0x80;
+        retval |= 0x70;
+        break;
+    case 0x1a: retval = (uint8_t)(0xf0 | irq_enabled); break;
+    case 0x1b: retval = sprite_priority; break;
+    case 0x1c: retval = sprite_multicolor; break;
+    case 0x1d: retval = sprite_double_width; break;
+    case 0x1e: retval = sprite_coll_ss; break;
+    case 0x1f: retval = sprite_coll_sb; break;
+    case 0x20: retval = border_color; break;
+    case 0x21: case 0x22: case 0x23: case 0x24:
+        retval = bgcolor[r - 0x21]; break;
+    case 0x25: case 0x26: retval = sprite_shared_colors[r - 0x25]; break;
+    case 0x27: case 0x28: case 0x29: case 0x2a:
+    case 0x2b: case 0x2c: case 0x2d: case 0x2e:
+        retval = sprite_colors[r - 0x27]; break;
+    default: retval = 0xff; break;
+    }
+    return retval;
+}
+
 void vic_write_register(uint8_t r, uint8_t v)
 {
     /* lazy rendering: draw already-executed lines with the pre-write state.
@@ -1463,7 +1570,7 @@ void vic_write_register(uint8_t r, uint8_t v)
         my[r >> 1] = v; break;
     case 0x10: msbx = v; break;
     case 0x11:
-        cr1 = (v & 0x7f);
+        cr1 = (cr1 & 0x80) | (v & 0x7f);
         raster_irq &= 0xff;
         raster_irq |= (v & 0x80) << 1;
         set_graphic_mode();

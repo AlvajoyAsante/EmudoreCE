@@ -35,6 +35,7 @@ static void print_value(const char *label, unsigned long value, uint8_t row)
 void perf_report(void)
 {
     unsigned int scope, page;
+    unsigned int offset;
 
     perf_get_summary(&summary);
     emulated_tenths = summary.frame_ticks
@@ -58,7 +59,7 @@ void perf_report(void)
     dbg_printf("[perf] frames=%lu rendered=%lu hidden=%lu chars=%lu sprite_lines=%lu asm_rows=%u skip=%u\n",
                perf_stats.frames, perf_stats.rendered_frames, perf_stats.hidden_frames,
                perf_stats.char_kernel_calls, perf_stats.sprite_lines,
-               (unsigned int)vic_asm_status(), (unsigned int)EMUDORE_FRAME_SKIP);
+               (unsigned int)vic_asm_status(), (unsigned int)vic_frame_skip_enabled());
     for (scope = 0; scope < PERF_SCOPE_COUNT; ++scope)
         dbg_printf("[perf-sample] scope=%u calls=%lu sampled=%lu exclusive_ticks=%lu\n",
                    scope, perf_stats.total_calls[scope],
@@ -73,6 +74,20 @@ void perf_report(void)
         if (perf_stats.pc_pages[page])
             dbg_printf("[perf-pc] page=%02x samples=%u\n",
                        page, (unsigned int)perf_stats.pc_pages[page]);
+    for (page = 0x01; page <= 0x08; page += 0x07)
+    {
+        uint16_t hottest_count = 0;
+        uint8_t hottest_offset = 0;
+        for (offset = 0; offset < 256; ++offset)
+            if (perf_stats.pc_hot_offsets[page >> 3][offset] > hottest_count)
+            {
+                hottest_count = perf_stats.pc_hot_offsets[page >> 3][offset];
+                hottest_offset = (uint8_t)offset;
+            }
+        if (hottest_count)
+            dbg_printf("[perf-pc-hot] pc=%02x%02x samples=%u\n", page,
+                       hottest_offset, (unsigned int)hottest_count);
+    }
 
     gfx_FillScreen(0);
     gfx_SetTextFGColor(1);
@@ -88,7 +103,7 @@ void perf_report(void)
     gfx_SetTextXY(12, 140);
     gfx_PrintString((vic_asm_status() & 4) ? "Character kernel: ASM" : "Character kernel: C");
     gfx_SetTextXY(12, 156);
-    gfx_PrintString(EMUDORE_FRAME_SKIP ? "Frame skipping: ON" : "Frame skipping: OFF");
+    gfx_PrintString(vic_frame_skip_enabled() ? "Frame skipping: ON" : "Frame skipping: OFF");
     gfx_SetTextXY(12, 178);
     gfx_PrintString("Sampled time, including loading:");
     print_value("CPU: ", sampled_cpu_percent, 194);

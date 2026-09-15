@@ -25,10 +25,13 @@ LTO          := NO
 CFLAGS ?= -Wall -Wextra -O2 -fno-strict-aliasing
 
 PROFILE ?= 0
-FRAME_SKIP ?= 0
+CPU_HOT_PROFILE ?= 0
+# Rendering every emulated frame can dominate gameplay; VIC pacing advances
+# emulation continuously while sampling display frames at a bounded rate.
+FRAME_SKIP ?= 1
 CHAR_ASM ?= 1
 # Reserve IX: nightly 19.1.0 otherwise reuses live stack frames as data pointers.
-override CFLAGS += -fno-omit-frame-pointer -DEMUDORE_PROFILE=$(PROFILE) -DEMUDORE_FRAME_SKIP=$(FRAME_SKIP) -DEMUDORE_CHAR_ASM=$(CHAR_ASM)
+override CFLAGS += -fno-omit-frame-pointer -DEMUDORE_PROFILE=$(PROFILE) -DEMUDORE_CPU_HOT_PROFILE=$(CPU_HOT_PROFILE) -DEMUDORE_FRAME_SKIP=$(FRAME_SKIP) -DEMUDORE_CHAR_ASM=$(CHAR_ASM)
 
 ifeq ($(PROFILE),1)
 OBJDIR ?= obj/profile
@@ -41,7 +44,14 @@ ifndef CEDEV
 $(error CEDEV environment path variable is not set)
 endif
 
+EXTRA_LDFLAGS += -T tools/program_memory.ld
+DEPS += tools/program_memory.ld
+
 include $(CEDEV)/meta/makefile.mk
+
+SIZE_OPTIMIZED_SOURCES := src/jit_emit.c src/jit.c src/cpu_decimal.c src/main.c src/CEPackage.c \
+						  src/browser.c src/browser_model.c src/browser_storage.c src/drive.c src/vblank.c
+$(addprefix $(OBJDIR)/,$(addsuffix .s,$(SIZE_OPTIMIZED_SOURCES))): override CFLAGS += -Oz
 
 # ----------------------------
 # ROM AppVars
@@ -50,15 +60,15 @@ include $(CEDEV)/meta/makefile.mk
 # Run `make roms` after changing the ROM dumps or the packaging tool.
 .PHONY: roms
 roms:
-	python tools/rom_to_appvar.py assets/roms/basic.901226-01.bin --kind basic --output bin/rom
-	python tools/rom_to_appvar.py assets/roms/kernal.bin --kind kernal --output bin/rom
-	python tools/rom_to_appvar.py assets/roms/characters.901225-01.bin --kind chars --output bin/rom
+	python tools/appvar_builder.py assets/roms/basic.901226-01.bin --kind basic --output bin/rom
+	python tools/appvar_builder.py assets/roms/kernal.bin --kind kernal --output bin/rom
+	python tools/appvar_builder.py assets/roms/characters.901225-01.bin --kind chars --output bin/rom
 
 # Package a cartridge image into ECCRTnn AppVars.
 CART ?=
 .PHONY: cart
 cart:
-	python tools/rom_to_appvar.py "$(CART)" --kind cart --output bin/rom
+	python tools/appvar_builder.py "$(CART)" --kind cart --output bin/rom
 
 # Package BASIC listings / PRGs into ECDSKnn AppVars.
 FILES ?= emudore/assets/bas/10print.bas emudore/assets/bas/lowercase.bas emudore/assets/bas/bouncing.bas emudore/assets/prg/monopole.prg
@@ -66,11 +76,11 @@ FILES ?= emudore/assets/bas/10print.bas emudore/assets/bas/lowercase.bas emudore
 files:
 	python tools/files_to_dsk_appvar.py $(FILES) --output bin/rom
 
-# Package a .d64 disk image's PRG files into ECDSKnn AppVars (see src/drive.c).
-DISK ?= tests/FINALBLW.D64
+# Package a .d64 disk image or .t64 tape image's PRG files into ECDSKnn AppVars (see src/drive.c).
+DISK ?= tests/4SOCCSIM.T64
 .PHONY: disk
 disk:
-	python tools/d64_to_appvar.py "$(DISK)" --output bin/rom
+	python tools/rom_to_appvar.py "$(DISK)" --output bin/rom
 
 PYTHON ?= python
 OPTIMIZED_OUTPUT ?= bin/optimized

@@ -10,10 +10,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#ifndef EMUDORE_FRAME_SKIP
-#define EMUDORE_FRAME_SKIP 0
-#endif
-
 #ifndef EMUDORE_CHAR_ASM
 #define EMUDORE_CHAR_ASM 1
 #endif
@@ -65,6 +61,8 @@ void    vic_write_register(uint8_t r, uint8_t v);
  * @return Current register or latch value as exposed on the CPU bus.
  */
 uint8_t vic_read_register(uint8_t r);
+/** Inspect a VIC register without read side effects or busy-poll detection. */
+uint8_t vic_peek_register(uint8_t r);
 /**
  * Return the number of frames completed since reset.
  *
@@ -99,6 +97,16 @@ void vic_debug_snapshot(VicDebug *d);
 
 /** Request that the next frame be rendered even if frame skipping is active. */
 void vic_request_render(void);
+/** Set the CPU/RAM fast-forward multiplier, clamped to 1..200. */
+void vic_set_cpu_turbo(uint8_t multiplier);
+/** Adapt the CPU/RAM multiplier to the completed-frame cadence. */
+void vic_set_cpu_turbo_adaptive(bool enabled);
+/** Suppress normal VIC presentation while an alternate diagnostic view is active. */
+void vic_set_render_suppressed(bool enabled);
+/** Enable adaptive rendering cadence; false renders every emulated frame. */
+void vic_set_frame_skip(bool enabled);
+/** Report whether adaptive rendering cadence is enabled. */
+bool vic_frame_skip_enabled(void);
 /**
  * Hide or reveal video output during boot/autoload choreography.
  *

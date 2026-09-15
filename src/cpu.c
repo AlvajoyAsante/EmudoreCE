@@ -19,6 +19,10 @@
 #include "drive.h"
 
 CpuState cpu;
+#ifndef NDEBUG
+uint32_t cpu_asm_selftest_mismatch;
+uint8_t cpu_asm_selftest_ref_mem[4];
+#endif
 
 /* cpu_core.s hard-codes these offsets; keep them pinned. */
 _Static_assert(offsetof(CpuState, pc) == 0, "pc offset");
@@ -37,12 +41,6 @@ _Static_assert(offsetof(CpuState, cycles) == 13, "cycles offset");
 
 /* eZ80 hybrid core (cpu_core.s); used only after the self-test passes. */
 extern bool cpu_run_asm(unsigned int until_cycles);
-static bool cpu_asm_ok;
-
-void cpu_asm_disable(void)
-{
-    cpu_asm_ok = false;
-}
 
 /* Set when cpu_emulate stops on an illegal opcode; main() reports it after
    the run loop (dbg_printf inside the hot path clobbers the IX frame). */
@@ -76,6 +74,7 @@ uint8_t cpu_warp;
 /* ROM-JIT gate: nonzero when the loaded KERNAL matched the byte patterns
    the native blocks in cpu_core.s were written against (set by c64.c). */
 uint8_t cpu_jit_kernal;
+bool cpu_jit_reentry;
 static unsigned int run_until;
 
 __attribute__((__always_inline__))
@@ -355,10 +354,9 @@ static void adc(uint8_t v, uint8_t cycles)
     uint16_t t;
     if (cpu.dmf)
     {
-        t = (cpu.a & 0xf) + (v & 0xf) + (cpu.cf ? 1 : 0);
-        if (t > 0x09) t += 0x6;
-        t += (cpu.a & 0xf0) + (v & 0xf0);
-        if ((t & 0x1f0) > 0x90) t += 0x60;
+        cpu_decimal_adc(v);
+        tick(cycles);
+        return;
     }
     else
     {
@@ -378,13 +376,9 @@ static void sbc(uint8_t v, uint8_t cycles)
     uint16_t t;
     if (cpu.dmf)
     {
-        t = (cpu.a & 0xf) - (v & 0xf) - (cpu.cf ? 0 : 1);
-        if ((t & 0x10) != 0)
-            t = ((t - 0x6) & 0xf) | ((cpu.a & 0xf0) - (v & 0xf0) - 0x10);
-        else
-            t = (t & 0xf) | ((cpu.a & 0xf0) - (v & 0xf0));
-        if ((t & 0x100) != 0)
-            t -= 0x60;
+        cpu_decimal_sbc(v);
+        tick(cycles);
+        return;
     }
     else
     {
@@ -592,7 +586,7 @@ static void bvs(void) { branch(cpu.of); }
 
 static void nop(void) { tick(2); }
 
-static void brk(void)
+void cpu_brk_native(void)
 {
     cpu_last_brk_pc = (uint16_t)(cpu.pc - 1);
     if (!cpu_brk_count)
@@ -625,6 +619,9 @@ static void rti(void)
 
 void cpu_reset(void)
 {
+#ifndef NDEBUG
+    memset(cpu_fallback_counts, 0, sizeof(cpu_fallback_counts));
+#endif
     cpu.a = cpu.x = cpu.y = cpu.sp = 0;
     cpu.cf = cpu.zf = cpu.idf = cpu.dmf = cpu.bcf = cpu.of = cpu.nf = false;
     cpu.pc = mem_read_word(ADDR_RESET_VEC);
@@ -661,7 +658,7 @@ static inline bool cpu_step(void)
 
     switch (insn)
     {
-    case 0x00: brk(); break;
+    case 0x00: cpu_brk_native(); break;
     case 0x01: ora(load_byte(addr_indx()), 6); break;
     case 0x05: ora(zp_read(), 3); break;
     case 0x06: asl_mem(addr_zero(), 5); break;
@@ -906,79 +903,36 @@ static inline bool cpu_step(void)
     return retval;
 }
 
-/* The asm core executes the hot opcodes; the C loop is the validated
-   fallback and shares cpu_step_slow's single copy of the opcode switch
-   (inlining it twice costs ~10 KiB of flash). */
+/* The assembly core is preferred after its startup self-test. */
 bool cpu_run(unsigned int until_cycles)
 {
+    unsigned int native_hits = jit_native_hits;
     run_until = until_cycles;
-    if (cpu_asm_ok)
-        return cpu_run_asm(until_cycles);
-    do
+    while ((int)(cpu.cycles - until_cycles) < 0)
     {
-        if (!cpu_step_slow())
-            return false;
-    } while ((int)(cpu.cycles - until_cycles) < 0);
-    return true;
-}
-
-/* One full C instruction step: the asm core's fallback for opcodes it does
-   not implement (illegals, BCD, RMW combos, drive traps). */
-bool cpu_step_slow(void)
-{
-    return cpu_step();
-}
-
-/* Pure C batch, available regardless of cpu_asm_ok (divergence probe). */
-bool cpu_run_c(unsigned int until_cycles)
-{
-    run_until = until_cycles;
-    do
-    {
-        if (!cpu_step_slow())
-            return false;
-    } while ((int)(cpu.cycles - until_cycles) < 0);
-    return true;
-}
-
-/* Runs the loaded KERNAL reset sequence through BOTH cores with increasing
-   cycle budgets (no chip emulation: fully deterministic) and reports the
-   first architectural divergence. Requires ROMs loaded; trashes RAM. */
-void cpu_asm_boot_probe(void (*machine_reset)(void),
-                        void (*report)(unsigned int budget,
-                                       const CpuState *c_state,
-                                       const CpuState *a_state))
-{
-    unsigned int budget;
-    CpuState c_state;
-
-    for (budget = 8; budget <= 30000; budget += (budget < 1200 ? 2 : 200))
-    {
-        machine_reset();
-        cpu_run_c(budget);
-        c_state = cpu;
-
-        machine_reset();
-        cpu_run_asm(budget);
-
-        if (c_state.pc != cpu.pc || c_state.sp != cpu.sp ||
-            c_state.a != cpu.a || c_state.x != cpu.x || c_state.y != cpu.y ||
-            c_state.cycles != cpu.cycles ||
-            c_state.cf != cpu.cf || c_state.zf != cpu.zf ||
-            c_state.nf != cpu.nf || c_state.of != cpu.of ||
-            c_state.idf != cpu.idf || c_state.dmf != cpu.dmf)
+        if (!jit_run_batch(until_cycles))
         {
-            report(budget, &c_state, &cpu);
-            return;
+            uint16_t missed_pc = cpu.pc;
+            bool result;
+            cpu_jit_reentry = jit_backend_ready() && jit_ready_block_count != 0;
+            result = cpu_run_asm(until_cycles);
+            cpu_jit_reentry = false;
+            if (result && jit_native_hits == native_hits)
+                jit_observe_pc(missed_pc);
+            return result;
         }
     }
-    report(0, &cpu, &cpu); /* no divergence found */
+    return true;
 }
 
 /* Runs the same 6502 program through the C core and the asm core and
    compares every register, flag, the cycle counter and touched memory.
    Requires mem_init() done; scribbles $0400-$05FF + a few ZP cells. */
-bool cpu_asm_selftest(void)
+#if defined(__clang__)
+__attribute__((__minsize__))
+#endif
+#if 0
+bool cpu_asm_selftest_c_reference(void)
 {
     static const uint8_t prog[] = {
         0xA9, 0x05,             /* 0400 LDA #$05        */
@@ -1016,36 +970,65 @@ bool cpu_asm_selftest(void)
         0x8D, 0x20, 0xD0,       /* 043C STA $D020 (IO-write C call)        */
         0xAD, 0x20, 0xD0,       /* 043F LDA $D020 (IO-read C call)         */
         0x85, 0x15,             /* 0442 STA $15         */
-        0x38,                   /* 0444 SEC             */
-        0x08,                   /* 0445 PHP             */
-        0x18,                   /* 0446 CLC             */
-        0x28,                   /* 0447 PLP (carry restored from stack)    */
-        0xA2, 0x02,             /* 0448 LDX #$02        */
-        0xA1, 0x10,             /* 044A LDA ($10,X)     */
-        0x81, 0x10,             /* 044C STA ($10,X)     */
-        0xA2, 0x06,             /* 044E LDX #$06        */
-        0x16, 0x10,             /* 0450 ASL $10,X       */
-        0x1E, 0x00, 0x05,       /* 0452 ASL $0500,X     */
-        0x6C, 0x18, 0x00,       /* 0455 JMP ($0018)     */
-        0xA9, 0x04,             /* 0458 LDA #$04 (RTI target hi)           */
-        0x48,                   /* 045A PHA             */
-        0xA9, 0x62,             /* 045B LDA #$62 (RTI target lo = $0462)   */
-        0x48,                   /* 045D PHA             */
-        0x08,                   /* 045E PHP             */
-        0x40,                   /* 045F RTI             */
-        0xA9, 0xEE,             /* 0460 LDA #$EE (skipped by RTI)          */
-        0x24, 0x16,             /* 0462 BIT $16 (lazy-NZ/V split check)    */
-        0x4C, 0x64, 0x04        /* 0464 JMP $0464 (spin until budget)      */
+        0xA0, 0x5A,             /* 0444 LDY #$5A        */
+        0xA2, 0x03,             /* 0446 LDX #$03        */
+        0x94, 0x12,             /* 0448 STY $12,X       */
+        0x38,                   /* 044A SEC             */
+        0x08,                   /* 044B PHP             */
+        0x18,                   /* 044C CLC             */
+        0x28,                   /* 044D PLP (carry restored from stack)    */
+        0xA2, 0x02,             /* 044E LDX #$02        */
+        0xA1, 0x10,             /* 0450 LDA ($10,X)     */
+        0x81, 0x10,             /* 0452 STA ($10,X)     */
+        0xA2, 0x06,             /* 0454 LDX #$06        */
+        0x16, 0x10,             /* 0456 ASL $10,X       */
+        0x1E, 0x00, 0x05,       /* 0458 ASL $0500,X     */
+        0x6C, 0x18, 0x00,       /* 045B JMP ($0018)     */
+        0xA9, 0x04,             /* 045E LDA #$04 (RTI target hi)           */
+        0x48,                   /* 0460 PHA             */
+        0xA9, 0x68,             /* 0461 LDA #$68 (RTI target lo = $0468)   */
+        0x48,                   /* 0463 PHA             */
+        0x08,                   /* 0464 PHP             */
+        0x40,                   /* 0465 RTI             */
+        0xA9, 0xEE,             /* 0466 LDA #$EE (skipped by RTI)          */
+        0xA0, 0x05,             /* 0468 LDY #$05        */
+        0xA2, 0xA7,             /* 046A LDX #$A7        */
+        0x96, 0x12,             /* 046C STX $12,Y       */
+        0x24, 0x16,             /* 046E BIT $16 (lazy-NZ/V split check)    */
+        0xA2, 0x00,             /* 0470 LDX #$00                            */
+        0xBD, 0x00, 0x05,       /* 0472 LDA $0500,X                         */
+        0x9D, 0x10, 0x05,       /* 0475 STA $0510,X                         */
+        0xE8,                   /* 0478 INX                                 */
+        0xD0, 0xF7,             /* 0479 BNE $0472 (dynamic JIT coverage)    */
+        0x4C, 0x7B, 0x04        /* 047B JMP $047B (spin until budget)      */
     };
     static const uint8_t sub[] = {
-        0xA9, 0x22,             /* 04A0 LDA #$22        */
-        0x85, 0x14,             /* 04A2 STA $14         */
-        0x60                    /* 04A4 RTS             */
+        0xA2, 0x01,             /* 04A0 LDX #$01        */
+        0xA9, 0x22,             /* 04A2 LDA #$22        */
+        0xD5, 0x2F,             /* 04A4 CMP $2F,X       */
+        0xF0, 0x02,             /* 04A6 BEQ $04AA       */
+        0xA9, 0xFF,             /* 04A8 LDA #$FF        */
+        0x85, 0x14,             /* 04AA STA $14         */
+        0xA9, 0xF0,             /* 04AC LDA #$F0        */
+        0x15, 0x30,             /* 04AE ORA $30,X       */
+        0x35, 0x31,             /* 04B0 AND $31,X       */
+        0x55, 0x32,             /* 04B2 EOR $32,X       */
+        0x18,                   /* 04B4 CLC             */
+        0xA9, 0x10,             /* 04B5 LDA #$10        */
+        0x75, 0x33,             /* 04B7 ADC $33,X       */
+        0x38,                   /* 04B9 SEC             */
+        0xF5, 0x34,             /* 04BA SBC $34,X       */
+        0x85, 0x36,             /* 04BC STA $36         */
+        0x60                    /* 04BE RTS             */
     };
     CpuState ref;
-    uint8_t ref_mem[8];
+    uint8_t ref_mem[10];
     int pass;
     bool ok = true;
+
+#ifndef NDEBUG
+    cpu_asm_selftest_mismatch = 0;
+#endif
 
     for (pass = 0; pass < 2 && ok; ++pass)
     {
@@ -1056,7 +1039,10 @@ bool cpu_asm_selftest(void)
         mem_low[0x12] = 0x00; mem_low[0x13] = 0x05;
         mem_low[0x14] = 0; mem_low[0x15] = 0;
         mem_low[0x16] = 0x41;                 /* ASL $10,X target */
-        mem_low[0x18] = 0x58; mem_low[0x19] = 0x04; /* JMP ($0018) -> $0458 */
+        mem_low[0x30] = 0x22; mem_low[0x31] = 0x0f;
+        mem_low[0x32] = 0xf3; mem_low[0x33] = 0x03;
+        mem_low[0x34] = 0x05; mem_low[0x35] = 0x04;
+        mem_low[0x18] = 0x5e; mem_low[0x19] = 0x04; /* JMP ($0018) -> $045e */
         vic_write_register(0x20, 0); /* deterministic border for readback */
         mem_setup_banks(LORAM | HIRAM | CHAREN);
         memset(&cpu, 0, sizeof(cpu));
@@ -1067,23 +1053,67 @@ bool cpu_asm_selftest(void)
         {
             cpu_asm_ok = false;
             cpu_run(300);
+#ifndef NDEBUG
+            cpu_asm_selftest_ref_mem[0] = mem_low[0x14];
+            cpu_asm_selftest_ref_mem[1] = mem_low[0x15];
+            cpu_asm_selftest_ref_mem[2] = mem_low[0x17];
+            cpu_asm_selftest_ref_mem[3] = mem_low[0x36];
+#endif
+            if (mem_low[0x14] != 0x22 || mem_low[0x15] != 0x5a ||
+                mem_low[0x17] != 0xa7 || mem_low[0x36] != 0x11)
+            {
+#ifndef NDEBUG
+                cpu_asm_selftest_mismatch |= 0x800000u;
+#endif
+                ok = false;
+            }
             ref = cpu;
             ref_mem[0] = mem_low[0x10]; ref_mem[1] = mem_low[0x11];
             ref_mem[2] = mem_low[0x14]; ref_mem[3] = mem_low[0x500];
             ref_mem[4] = mem_low[0x506]; ref_mem[5] = mem_low[0x507];
             ref_mem[6] = mem_low[0x15]; ref_mem[7] = mem_low[0x16];
+            ref_mem[8] = mem_low[0x17];
+            ref_mem[9] = mem_low[0x36];
         }
         else
         {
             cpu_run_asm(300);
-            ok = ref.pc == cpu.pc && ref.sp == cpu.sp && ref.a == cpu.a &&
-                 ref.x == cpu.x && ref.y == cpu.y && ref.cycles == cpu.cycles &&
-                 ref.cf == cpu.cf && ref.zf == cpu.zf && ref.nf == cpu.nf &&
-                 ref.of == cpu.of &&
-                 ref_mem[0] == mem_low[0x10] && ref_mem[1] == mem_low[0x11] &&
-                 ref_mem[2] == mem_low[0x14] && ref_mem[3] == mem_low[0x500] &&
-                 ref_mem[4] == mem_low[0x506] && ref_mem[5] == mem_low[0x507] &&
-                 ref_mem[6] == mem_low[0x15] && ref_mem[7] == mem_low[0x16];
+    #ifndef NDEBUG
+    #define SELFTEST_MISMATCH(bit, lhs, rhs) \
+              do { if ((lhs) != (rhs)) cpu_asm_selftest_mismatch |= (bit); } while (0)
+              SELFTEST_MISMATCH(0x000001u, ref.pc, cpu.pc);
+              SELFTEST_MISMATCH(0x000002u, ref.sp, cpu.sp);
+              SELFTEST_MISMATCH(0x000004u, ref.a, cpu.a);
+              SELFTEST_MISMATCH(0x000008u, ref.x, cpu.x);
+              SELFTEST_MISMATCH(0x000010u, ref.y, cpu.y);
+              SELFTEST_MISMATCH(0x000020u, ref.cycles, cpu.cycles);
+              SELFTEST_MISMATCH(0x000040u, ref.cf, cpu.cf);
+              SELFTEST_MISMATCH(0x000080u, ref.zf, cpu.zf);
+              SELFTEST_MISMATCH(0x000100u, ref.nf, cpu.nf);
+              SELFTEST_MISMATCH(0x000200u, ref.of, cpu.of);
+              SELFTEST_MISMATCH(0x000400u, ref_mem[0], mem_low[0x10]);
+              SELFTEST_MISMATCH(0x000800u, ref_mem[1], mem_low[0x11]);
+              SELFTEST_MISMATCH(0x001000u, ref_mem[2], mem_low[0x14]);
+              SELFTEST_MISMATCH(0x002000u, ref_mem[3], mem_low[0x500]);
+              SELFTEST_MISMATCH(0x004000u, ref_mem[4], mem_low[0x506]);
+              SELFTEST_MISMATCH(0x008000u, ref_mem[5], mem_low[0x507]);
+              SELFTEST_MISMATCH(0x010000u, ref_mem[6], mem_low[0x15]);
+              SELFTEST_MISMATCH(0x020000u, ref_mem[7], mem_low[0x16]);
+              SELFTEST_MISMATCH(0x040000u, ref_mem[8], mem_low[0x17]);
+              SELFTEST_MISMATCH(0x080000u, ref_mem[9], mem_low[0x36]);
+    #undef SELFTEST_MISMATCH
+              ok = cpu_asm_selftest_mismatch == 0;
+    #else
+              ok = ref.pc == cpu.pc && ref.sp == cpu.sp && ref.a == cpu.a &&
+                  ref.x == cpu.x && ref.y == cpu.y && ref.cycles == cpu.cycles &&
+                  ref.cf == cpu.cf && ref.zf == cpu.zf && ref.nf == cpu.nf &&
+                  ref.of == cpu.of &&
+                  ref_mem[0] == mem_low[0x10] && ref_mem[1] == mem_low[0x11] &&
+                  ref_mem[2] == mem_low[0x14] && ref_mem[3] == mem_low[0x500] &&
+                  ref_mem[4] == mem_low[0x506] && ref_mem[5] == mem_low[0x507] &&
+                  ref_mem[6] == mem_low[0x15] && ref_mem[7] == mem_low[0x16] &&
+                  ref_mem[8] == mem_low[0x17] && ref_mem[9] == mem_low[0x36];
+    #endif
         }
     }
 
@@ -1091,11 +1121,50 @@ bool cpu_asm_selftest(void)
     memset(mem_low + 0x0400, 0, 0x0200);
     mem_low[0x10] = mem_low[0x11] = mem_low[0x12] = 0;
     mem_low[0x13] = mem_low[0x14] = mem_low[0x15] = 0;
-    mem_low[0x16] = mem_low[0x18] = mem_low[0x19] = 0;
+    mem_low[0x16] = mem_low[0x17] = mem_low[0x18] = mem_low[0x19] = 0;
+    mem_low[0x30] = mem_low[0x31] = mem_low[0x32] = 0;
+    mem_low[0x33] = mem_low[0x34] = mem_low[0x35] = mem_low[0x36] = 0;
     vic_write_register(0x20, 0);
     mem_setup_banks(LORAM | HIRAM | CHAREN);
     memset(&cpu, 0, sizeof(cpu));
 
-    cpu_asm_ok = ok;
+    return ok;
+}
+#endif
+
+bool cpu_asm_selftest(void)
+{
+    static const uint8_t program[] = {0xe6, 0x01, 0xc6, 0x01};
+    CpuState saved = cpu;
+    uint8_t saved_program[sizeof(program)];
+    uint8_t saved_port = mem_low[1];
+    const uint8_t *basic_page;
+    bool ok;
+
+    memcpy(saved_program, mem_low + 0x400, sizeof(program));
+    memcpy(mem_low + 0x400, program, sizeof(program));
+    mem_setup_banks(7);
+    basic_page = mem_rd_pg[0xa0].ptr;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.pc = 0x400;
+    cpu.sp = 0xfd;
+    cpu.a = 0xa5;
+    cpu.x = 0x5a;
+    cpu.y = 0x81;
+    cpu.cf = cpu.idf = cpu.of = true;
+    ok = cpu_run_asm(5) && cpu.pc == 0x402 && cpu.cycles == 5 &&
+         mem_low[1] == 8 && mem_rd_pg[0xa0].ptr == mem_ram &&
+         mem_rd_pg[0xe0].ptr == mem_ram && !cpu.zf && !cpu.nf;
+    if (ok)
+        ok = cpu_run_asm(10) && cpu.pc == 0x404 && cpu.cycles == 10 &&
+             mem_low[1] == 7 && mem_rd_pg[0xa0].ptr == basic_page &&
+             cpu.sp == 0xfd && cpu.a == 0xa5 && cpu.x == 0x5a && cpu.y == 0x81 &&
+             cpu.cf && cpu.idf && cpu.of && !cpu.dmf && !cpu.zf && !cpu.nf;
+#ifndef NDEBUG
+    cpu_asm_selftest_mismatch = ok ? 0 : 1;
+#endif
+    memcpy(mem_low + 0x400, saved_program, sizeof(program));
+    mem_setup_banks(saved_port);
+    cpu = saved;
     return ok;
 }

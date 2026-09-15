@@ -44,6 +44,9 @@ static const char *const packageIds[CE_PACKAGE_COUNT] = {
 static uint8_t directHandles[CE_PACKAGE_COUNT][CE_PACKAGE_DIRECT_CHUNKS];
 static const uint8_t *directData[CE_PACKAGE_COUNT][CE_PACKAGE_DIRECT_CHUNKS];
 static void *directOwnedBuffer[CE_PACKAGE_COUNT];
+static char directPackageIds[CE_PACKAGE_COUNT][CE_PACKAGE_DISK_ID_MAX + 1];
+
+static int makeChunkName(char name[9], const char *packageId, uint8_t chunk);
 
 static int packageIndex(const char *packageId)
 {
@@ -51,7 +54,9 @@ static int packageIndex(const char *packageId)
     for (i = 0; i < CE_PACKAGE_COUNT; ++i)
         if (!strcmp(packageId, packageIds[i]))
             return i;
-    return -1;
+    /* Disk packages have a runtime-selected ID, but retain the fixed DSK
+       header kind so ROM/cart IDs cannot be mistaken for disks. */
+    return makeChunkName((char[9]){0}, packageId, 0) ? CE_PACKAGE_COUNT - 1 : -1;
 }
 
 static unsigned int read16(const uint8_t *data)
@@ -149,6 +154,61 @@ static uint8_t openChunk(const char *packageId, uint8_t chunk, uint8_t header[CE
     }
 
     return handle;
+}
+
+static int diskIdFromName(char id[CE_PACKAGE_DISK_ID_MAX + 1], const char *name)
+{
+    size_t length;
+    size_t index;
+
+    if (!name || name[0] != 'E' || name[1] != 'C')
+        return 0;
+    length = strlen(name);
+    if (length < 5 || length > 8 || name[length - 2] != '0' || name[length - 1] != '0')
+        return 0;
+    length -= 4;
+    for (index = 0; index < length; ++index)
+    {
+        char character = name[index + 2];
+        if (!((character >= 'A' && character <= 'Z') ||
+              (character >= '0' && character <= '9')))
+            return 0;
+        id[index] = character;
+    }
+    id[length] = '\0';
+    return 1;
+}
+
+uint8_t CEPackageFindDisks(CEPackageDisk *disks, uint8_t capacity)
+{
+    void *vat = NULL;
+    char *name;
+    uint8_t found = 0;
+
+    if (!disks || !capacity)
+        return 0;
+    while ((name = ti_Detect(&vat, "EM64")) != NULL)
+    {
+        CEPackageDisk disk;
+        uint8_t header[CE_PACKAGE_HEADER_SIZE];
+        uint8_t handle;
+
+        if (!diskIdFromName(disk.id, name))
+            continue;
+        handle = openChunk(disk.id, 0, header);
+        if (!handle || header[5] != CE_PACKAGE_COUNT - 1)
+        {
+            if (handle)
+                ti_Close(handle);
+            continue;
+        }
+        disk.size = read32(header + 14);
+        ti_Close(handle);
+        disks[found++] = disk;
+        if (found == capacity)
+            break;
+    }
+    return found;
 }
 
 typedef struct
@@ -389,6 +449,20 @@ int CEPackageValidate(const char *packageId, uint32_t expectedSize)
     return 1;
 }
 
+int CEPackageFileExists(const char *packageId)
+{
+    char name[9];
+    uint8_t handle;
+
+    if (!makeChunkName(name, packageId, 0))
+        return 0;
+    handle = ti_Open(name, "r");
+    if (!handle)
+        return 0;
+    ti_Close(handle);
+    return 1;
+}
+
 const uint8_t *CEPackageGetDirect(const char *packageId, uint32_t expectedSize)
 {
     return CEPackageGetDirectChunk(packageId, 0, expectedSize);
@@ -405,6 +479,20 @@ const uint8_t *CEPackageGetDirectChunk(const char *packageId, uint8_t chunk,
 
     if (index < 0 || chunk >= CE_PACKAGE_DIRECT_CHUNKS)
         return NULL;
+    if (index == CE_PACKAGE_COUNT - 1 && directPackageIds[index][0] &&
+        strcmp(directPackageIds[index], packageId))
+    {
+        uint8_t clear;
+
+        for (clear = 0; clear < CE_PACKAGE_DIRECT_CHUNKS; ++clear)
+        {
+            directHandles[index][clear] = 0;
+            directData[index][clear] = NULL;
+        }
+        free(directOwnedBuffer[index]);
+        directOwnedBuffer[index] = NULL;
+        directPackageIds[index][0] = '\0';
+    }
     if (directData[index][chunk])
         return directData[index][chunk];
 
@@ -434,6 +522,8 @@ const uint8_t *CEPackageGetDirectChunk(const char *packageId, uint8_t chunk,
         dbg_printf("[pkg] decompressed ok\n");
 
         directOwnedBuffer[index] = decoded;
+        if (index == CE_PACKAGE_COUNT - 1)
+            strcpy(directPackageIds[index], packageId);
         /* The decompressed buffer is contiguous original data; point every
            direct-chunk slot at its slice so banked (mapper) reads work. */
         for (fill = 0; fill < CE_PACKAGE_DIRECT_CHUNKS; ++fill)
@@ -460,6 +550,8 @@ const uint8_t *CEPackageGetDirectChunk(const char *packageId, uint8_t chunk,
         return NULL;
 
     directData[index][chunk] = data;
+    if (index == CE_PACKAGE_COUNT - 1)
+        strcpy(directPackageIds[index], packageId);
     return directData[index][chunk];
 }
 
@@ -496,6 +588,7 @@ void CEPackageCloseDirect(void)
             free(directOwnedBuffer[index]);
             directOwnedBuffer[index] = NULL;
         }
+        directPackageIds[index][0] = '\0';
     }
 }
 

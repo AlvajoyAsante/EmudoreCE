@@ -34,15 +34,17 @@ void drive_invalidate(void);
 #define DRIVE_TRAP2_OPCODE 0x12 /* resident game fastloader (signature) */
 
 /**
- * Initialize the virtual drive from the DSK AppVar package.
+ * Initialize the virtual drive from a selected disk AppVar package.
  *
  * This validates the packaged D64-derived directory and maps chunk 0 so the
  * loader can serve PRG data directly from archived storage.
  *
+ * @param package_id Runtime package identifier, or CE_PACKAGE_DISK for the
+ *        legacy ECDSKnn AppVar set.
  * @return true when a valid disk package is present; false when no disk is
  *         available, which is still a normal boot-to-BASIC case.
  */
-bool drive_init(void);
+bool drive_init(const char *package_id);
 
 /**
  * Return how many PRG entries are available in the current disk package.
@@ -72,6 +74,15 @@ void drive_select_file(uint8_t index);
  * and trapped LOADs answer DEVICE NOT PRESENT immediately.
  */
 void drive_disable(void);
+
+/**
+ * Suppress the disk auto-load/auto-run retype for an in-session resume.
+ *
+ * Call right after drive_init() when continuing an already-running game
+ * instead of booting it fresh, so drive_tick() does not mistake the resumed
+ * session for a fresh boot and retype LOAD"*",8,1 into it.
+ */
+void drive_suppress_autoload(void);
 
 /**
  * Patch the loaded KERNAL image to trap LOAD requests.
@@ -117,8 +128,9 @@ typedef struct
     uint8_t name[3];   /* first filename bytes (PETSCII)            */
 } DriveTrace;
 
-#define DRIVE_TRACE_MAX 8
+#define DRIVE_TRACE_MAX 16
 extern DriveTrace drive_trace[DRIVE_TRACE_MAX];
-extern uint8_t drive_trace_count; /* total traps (ring keeps the first 8) */
+extern uint8_t drive_trace_count; /* total traps (keeps the first 16) */
+extern uint8_t drive_autostart_stage; /* 0=LOAD pending, 1=loaded, 2=RUN queued */
 
 #endif /* EMUDORE_CE_DRIVE_H */

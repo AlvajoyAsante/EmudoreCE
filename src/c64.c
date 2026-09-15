@@ -15,6 +15,7 @@
 #include "c64.h"
 #include "cpu.h"
 #include "memory.h"
+#include "jit.h"
 #include "cia1.h"
 #include "cia2.h"
 #include "vic.h"
@@ -121,7 +122,7 @@ void c64_init(void)
         return;
     if (!c64_boot_roms())
         return;
-    if (drive_init())
+    if (drive_init(CE_PACKAGE_DISK))
         drive_patch_kernal();
     cia1_reset();
     cia2_reset();
@@ -130,15 +131,26 @@ void c64_init(void)
     c64_mark_ready();
 }
 
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
 /* Total emulated cycles, accumulated per raster line (cpu.cycles itself is
-   24-bit and wraps every ~17 s). Read by main()'s exit speed report. */
+    24-bit and wraps every ~17 s). Read by main()'s debug exit speed report. */
 unsigned long c64_total_cycles;
+#endif
 
 #ifndef NDEBUG
 /* Wall-tick (32 kHz) buckets per subsystem: 0=cpu_run 1=vic 2=io 3=cia+drive.
    Coarse per call but exact in aggregate; names the hog in the exit dump. */
 unsigned long c64_prof[4];
 unsigned long c64_prof_lines;
+#endif
+
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
+uint16_t c64_hot_pc[2];
+uint16_t c64_hot_pc_votes[2];
+uint16_t c64_hot_pc_samples[2];
+uint8_t c64_hot_bytes[2][8];
+uint16_t c64_hot_branch_pc[2];
+uint8_t c64_hot_branch_bytes[2][16];
 #endif
 
 void c64_run(void)
@@ -149,7 +161,9 @@ void c64_run(void)
        8/16 lines (still ~2500/1250 Hz); cheap cycle-based cia2/drive stay
        at 4 lines. */
     unsigned int line = 0;
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
     unsigned int last_cycles = cpu.cycles;
+#endif
 #if EMUDORE_PROFILE
     uint8_t sample_phase = 0;
     unsigned long sample_start;
@@ -157,10 +171,61 @@ void c64_run(void)
 #ifndef NDEBUG
     unsigned int t0, t1;
 #endif
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
     c64_total_cycles = 0;
+#endif
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
+    memset(c64_hot_pc, 0, sizeof(c64_hot_pc));
+    memset(c64_hot_pc_votes, 0, sizeof(c64_hot_pc_votes));
+    memset(c64_hot_pc_samples, 0, sizeof(c64_hot_pc_samples));
+    memset(c64_hot_bytes, 0, sizeof(c64_hot_bytes));
+    memset(c64_hot_branch_pc, 0, sizeof(c64_hot_branch_pc));
+    memset(c64_hot_branch_bytes, 0, sizeof(c64_hot_branch_bytes));
+#endif
     perf_reset();
     for (;;)
     {
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
+        if ((line & 15u) == 0)
+        {
+            uint8_t page = (uint8_t)(cpu.pc >> 8);
+            if (page == 0x07 || page == 0x08)
+            {
+                uint8_t hot_index = page - 0x07;
+                if (c64_hot_pc_samples[hot_index] != UINT16_MAX)
+                    ++c64_hot_pc_samples[hot_index];
+                if (c64_hot_pc_votes[hot_index] == 0)
+                {
+                    c64_hot_pc[hot_index] = cpu.pc;
+                    c64_hot_pc_votes[hot_index] = 1;
+                }
+                else if (c64_hot_pc[hot_index] == cpu.pc)
+                    ++c64_hot_pc_votes[hot_index];
+                else
+                    --c64_hot_pc_votes[hot_index];
+                if (c64_hot_pc[hot_index] == cpu.pc)
+                {
+                    uint8_t byte_index;
+                    for (byte_index = 0; byte_index < 8; ++byte_index)
+                        c64_hot_bytes[hot_index][byte_index] =
+                            mem_debug_peek_cpu((uint16_t)(cpu.pc + byte_index));
+                    for (byte_index = 0; byte_index < 7; ++byte_index)
+                    {
+                        if (c64_hot_bytes[hot_index][byte_index] == 0xd0)
+                        {
+                            int8_t offset = (int8_t)c64_hot_bytes[hot_index][byte_index + 1];
+                            uint16_t target = (uint16_t)(cpu.pc + byte_index + 2 + offset);
+                            c64_hot_branch_pc[hot_index] = target;
+                            for (byte_index = 0; byte_index < 16; ++byte_index)
+                                c64_hot_branch_bytes[hot_index][byte_index] =
+                                    mem_debug_peek_cpu((uint16_t)(target + byte_index));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+#endif
 #if EMUDORE_PROFILE
         perf_set_sample(sample_phase == 0);
         if (++sample_phase == 17)
@@ -181,8 +246,10 @@ void c64_run(void)
 #if EMUDORE_PROFILE
         perf_end(PERF_CPU, sample_start);
 #endif
+    #if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
         c64_total_cycles += (unsigned int)(cpu.cycles - last_cycles);
         last_cycles = cpu.cycles;
+    #endif
 #ifndef NDEBUG
         t1 = (unsigned int)timer_Get(1);
         c64_prof[0] += (unsigned int)(t1 - t0);

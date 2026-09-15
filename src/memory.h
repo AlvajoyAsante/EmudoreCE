@@ -9,6 +9,7 @@
 #define EMUDORE_CE_MEMORY_H
 
 #include <stdint.h>
+#include "jit.h"
 
 #define MEM_SIZE 0x10000
 
@@ -132,6 +133,13 @@ uint8_t mem_read_io(uint16_t addr);
  * @param v Byte value to write.
  */
 void    mem_write_io(uint16_t addr, uint8_t v);
+/**
+ * Inspect one byte through the current CPU memory map without triggering
+ * device read side effects.
+ */
+uint8_t mem_debug_peek_cpu(uint16_t addr);
+/** Inspect RAM beneath ROM and I/O, ignoring the current CPU memory map. */
+uint8_t mem_debug_peek_ram(uint16_t addr);
 
 /* C64 pages $00-$0F (ZP, stack, OS workspace, default screen) live in BSS
    RAM instead of VRAM: they are the hottest data and VRAM pays LCD-DMA
@@ -166,6 +174,8 @@ static inline void mem_write_byte(uint16_t addr, uint8_t v)
     if (p)
     {
         p[addr] = v;
+        if (!++jit_page_generation[a.b.hi])
+            jit_page_generation_wrapped = 1;
         if (addr == ADDR_MEM_LAYOUT)
             mem_setup_banks(v);
     }
@@ -181,6 +191,8 @@ static inline uint8_t mem_read_byte_no_io(uint16_t addr)
 static inline void mem_write_byte_no_io(uint16_t addr, uint8_t v)
 {
     *mem_host_ptr(addr) = v;
+    if (!++jit_page_generation[(uint8_t)(addr >> 8)])
+        jit_page_generation_wrapped = 1;
 }
 
 __attribute__((__always_inline__))

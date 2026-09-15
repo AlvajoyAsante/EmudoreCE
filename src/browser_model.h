@@ -32,7 +32,6 @@ void browser_model_init(BrowserModel *model, uint8_t file_count,
 bool browser_model_move(BrowserModel *model, int distance);
 void browser_model_view(BrowserModel *model);
 bool browser_model_launcher(BrowserModel *model);
-bool browser_model_hide(BrowserModel *model);
 uint16_t browser_model_entry(const BrowserModel *model);
 
 #endif

@@ -38,5 +38,7 @@ void    cia1_write_register(uint8_t r, uint8_t v);
  * @return The value currently exposed on the emulated data bus.
  */
 uint8_t cia1_read_register(uint8_t r);
+/** Inspect a CIA register without feeding the VIC busy-poll detector. */
+uint8_t cia1_peek_register(uint8_t r);
 
 #endif /* EMUDORE_CE_CIA1_H */

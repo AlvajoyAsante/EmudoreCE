@@ -22,6 +22,12 @@
 #define IO_CROP_X 43
 #define IO_CROP_Y 22
 
+/* The 16 real C64 colours (graphx 1555), shared with the file browser so
+   neither draws with a made-up colour scheme. Index N stays index N
+   everywhere: browser icons, GRAPH-menu chrome and in-game pixels all mean
+   the same colour. */
+extern const uint16_t c64_palette[16];
+
 #ifndef IO_SHOW_FPS_OVERLAY
 #define IO_SHOW_FPS_OVERLAY 0
 #endif
@@ -100,6 +106,10 @@ uint16_t io_palette_probe(uint8_t index);
 uint8_t *io_text_row(int y);
 /** End-of-frame hook; completed row compositions are already on the LCD. */
 void io_screen_refresh(void);
+/** Copy the RAM-backed VRAM page to the visible framebuffer when viewing it. */
+void io_refresh_vram_view(void);
+/** Refresh the live debugger memory view in the normal 320x200 display area. */
+void io_refresh_debug_view(void);
 /**
  * Draw or suppress the host-side FPS overlay.
  *
@@ -133,5 +143,22 @@ uint8_t io_joystick2(void);
  * @return true once CLEAR has been pressed on the calculator keypad.
  */
 bool io_quit_requested(void);
+
+/**
+ * Show the shared Key Settings modal (Clear action, Function keys, Fire
+ * button). Callable from the GRAPH pause menu mid-game or from the file
+ * browser before a game runs; only touches its own state plus graphx/
+ * keypadc, so it needs no prior io_init(). The caller must repaint whatever
+ * was on screen underneath once this returns.
+ */
+void io_show_key_settings(void);
+
+/**
+ * Report the Key Settings "Clear action" choice.
+ *
+ * @return true when a finished session should exit straight to the OS
+ *         instead of returning to the file browser.
+ */
+bool io_clear_exits_to_os(void);
 
 #endif /* EMUDORE_CE_IO_H */

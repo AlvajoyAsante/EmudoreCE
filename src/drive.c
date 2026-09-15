@@ -14,6 +14,7 @@
 #include "vic.h"
 #include "CEPackage.h"
 #include "crc32.h"
+#include "jit.h"
 
 /* DSK payload layout (see tools/d64_to_appvar.py):
    u8 count, then count * 22-byte entries { name[16] PETSCII $A0-padded,
@@ -37,8 +38,9 @@
 
 static uint32_t disk_size;       /* 0 = no disk package present */
 static const uint8_t *disk_dir;  /* chunk 0: count byte + directory entries */
+static const char *disk_package;
 static uint8_t selected_file;
-static uint8_t autostart_done;
+uint8_t drive_autostart_stage;
 static unsigned int unhide_frame; /* frame at which to lift the hidden boot */
 static bool ready_pc_detect;     /* KERNAL wait-loop bytes verified */
 static DriveIdentity disk_identity;
@@ -51,22 +53,29 @@ void drive_invalidate(void)
 {
     disk_dir = NULL;
     disk_size = 0;
+    disk_package = NULL;
     selected_file = 0xff;
     identity_valid = false;
 }
 
-bool drive_init(void)
+bool drive_init(const char *package_id)
 {
     uint8_t count;
 
     drive_invalidate();
-    disk_size = CEPackageSize(CE_PACKAGE_DISK);
+    drive_autostart_stage = 0;
+    unhide_frame = 0;
+    ready_pc_detect = false;
+    drive_trace_count = 0;
+    if (!package_id)
+        return false;
+    disk_size = CEPackageSize(package_id);
     if (!disk_size)
         return false;
 
     /* Uncompressed packages map straight into the archived AppVar; the
        directory always fits in chunk 0 (144 * 22 + 1 < 32 KiB). */
-    disk_dir = CEPackageGetDirectChunk(CE_PACKAGE_DISK, 0, disk_size);
+    disk_dir = CEPackageGetDirectChunk(package_id, 0, disk_size);
     if (!disk_dir)
     {
         disk_size = 0;
@@ -79,10 +88,7 @@ bool drive_init(void)
         drive_invalidate();
         return false;
     }
-    autostart_done = 0;
-    unhide_frame = 0;
-    ready_pc_detect = false;
-    drive_trace_count = 0;
+    disk_package = package_id;
     return true;
 }
 
@@ -128,6 +134,13 @@ void drive_disable(void)
     drive_invalidate();
 }
 
+void drive_suppress_autoload(void)
+{
+    drive_autostart_stage = 2;
+    ready_pc_detect = false;
+    unhide_frame = 0;
+}
+
 void drive_patch_kernal(void)
 {
     /* $F4A5 (KERNAL offset $14A5) is STA $93, the first instruction of the
@@ -166,8 +179,8 @@ bool drive_file_info(uint8_t index, DriveFileInfo *info)
     if (offset < 1 + (uint32_t)drive_file_count() * DIR_ENTRY_SIZE ||
         offset > disk_size || size < 2 || size > disk_size - offset)
         return false;
-    low = CEPackageChunkPtr(CE_PACKAGE_DISK, offset, disk_size);
-    high = CEPackageChunkPtr(CE_PACKAGE_DISK, offset + 1, disk_size);
+    low = CEPackageChunkPtr(disk_package, offset, disk_size);
+    high = CEPackageChunkPtr(disk_package, offset + 1, disk_size);
     if (!low || !high)
         return false;
     drive_file_name(index, info->name, sizeof(info->name));
@@ -189,7 +202,7 @@ bool drive_identity(DriveIdentity *identity)
             uint32_t remaining = disk_size - offset;
             size_t length = remaining > CHUNK_PAYLOAD ? CHUNK_PAYLOAD : remaining;
             const uint8_t *data = CEPackageGetDirectChunk(
-                CE_PACKAGE_DISK, (uint8_t)(offset / CHUNK_PAYLOAD), disk_size);
+                disk_package, (uint8_t)(offset / CHUNK_PAYLOAD), disk_size);
             if (!data)
                 return false;
             crc = crc32_update(crc, data, length);
@@ -205,7 +218,7 @@ bool drive_identity(DriveIdentity *identity)
 /* One byte of the disk payload (offsets can straddle chunk boundaries). */
 static uint8_t disk_byte(uint32_t offset)
 {
-    const uint8_t *p = CEPackageChunkPtr(CE_PACKAGE_DISK, offset, disk_size);
+    const uint8_t *p = CEPackageChunkPtr(disk_package, offset, disk_size);
     return p ? *p : 0;
 }
 
@@ -240,6 +253,13 @@ static const uint8_t *find_entry(uint16_t name_addr, uint8_t name_len)
     uint8_t count = disk_dir[0];
     uint8_t i;
 
+    if (name_len >= 2 && mem_read_byte(name_addr) == '0' &&
+        mem_read_byte((uint16_t)(name_addr + 1)) == ':')
+    {
+        name_addr = (uint16_t)(name_addr + 2);
+        name_len -= 2;
+    }
+
     if (selected_file < count && name_len == 1 && mem_read_byte(name_addr) == '*')
         return entry + (uint32_t)selected_file * DIR_ENTRY_SIZE;
 
@@ -257,7 +277,7 @@ static void disk_copy_to_ram(uint32_t offset, uint16_t addr, uint32_t count)
 {
     while (count)
     {
-        const uint8_t *src = CEPackageChunkPtr(CE_PACKAGE_DISK, offset, disk_size);
+        const uint8_t *src = CEPackageChunkPtr(disk_package, offset, disk_size);
         unsigned int run = CHUNK_PAYLOAD - (unsigned int)(offset & (CHUNK_PAYLOAD - 1));
         if (!src)
             return; /* cannot happen for a validated package */
@@ -281,6 +301,7 @@ static void disk_copy_to_ram(uint32_t offset, uint16_t addr, uint32_t count)
                     span = wrap;
             }
             memcpy(mem_host_ptr(addr), src, span);
+            jit_invalidate_range(addr, span);
             addr = (uint16_t)(addr + span);
             src += span;
             run -= span;
@@ -494,19 +515,24 @@ void drive_tick(void)
     }
 
     /* Stage 2: after the load, queue RUN so single-file games self-start. */
-    if (autostart_done == 1 && drive_trace_count == 1)
+    if (drive_autostart_stage == 1 && drive_trace_count == 1)
     {
-        /* Wait until BASIC is back at the READY input loop. */
+        /* The keyboard bytes become idle before LOAD has returned to BASIC.
+           Queue RUN only after the verified READY loop is actually reached. */
         if (mem_low[ZP_BLNSW] != 0 || mem_low[ZP_NDX] != 0)
+            return;
+        if (ready_pc_detect && (cpu.pc < 0xe5cd || cpu.pc > 0xe5d5))
+            return;
+        if (!ready_pc_detect && vic_frames() < 120)
             return;
         for (i = 0; i < 4; ++i)
             mem_low[ADDR_KEYBUF + i] = run_cmd[i];
         mem_low[ZP_NDX] = 4;
-        autostart_done = 2;
+        drive_autostart_stage = 2;
         vic_request_render();
         return;
     }
-    if (autostart_done)
+    if (drive_autostart_stage)
         return;
 
     /* Wait for the READY prompt: keyboard buffer idle and the pc parked in
@@ -526,6 +552,6 @@ void drive_tick(void)
     for (i = 0; i < KEYBUF_MAX; ++i)
         mem_low[ADDR_KEYBUF + i] = command[i];
     mem_low[ZP_NDX] = KEYBUF_MAX;
-    autostart_done = 1;
+    drive_autostart_stage = 1;
     vic_request_render();
 }

@@ -131,13 +131,18 @@ void perf_frame_complete(bool rendered, bool hidden)
 void perf_sample_pc(uint16_t pc)
 {
     uint8_t page;
+    uint8_t offset;
 
     if (!sampling_active)
         return;
 
     page = (uint8_t)(pc >> 8);
+    offset = (uint8_t)pc;
     if (perf_stats.pc_pages[page] != UINT16_MAX)
         ++perf_stats.pc_pages[page];
+    if ((page == 0x01 || page == 0x08) &&
+        perf_stats.pc_hot_offsets[page >> 3][offset] != UINT16_MAX)
+        ++perf_stats.pc_hot_offsets[page >> 3][offset];
 }
 
 void perf_get_summary(PerfSummary *summary)

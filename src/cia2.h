@@ -38,6 +38,8 @@ void     cia2_write_register(uint8_t r, uint8_t v);
  * @return The value currently exposed on the emulated data bus.
  */
 uint8_t  cia2_read_register(uint8_t r);
+/** Inspect a CIA register without feeding the VIC busy-poll detector. */
+uint8_t  cia2_peek_register(uint8_t r);
 /**
  * Decode the current VIC-II 16 KiB base address.
  *

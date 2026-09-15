@@ -135,6 +135,41 @@ uint8_t cia1_read_register(uint8_t r)
     return retval;
 }
 
+uint8_t cia1_peek_register(uint8_t r)
+{
+    uint8_t retval = 0;
+
+    switch (r)
+    {
+    case 0x0: retval = (uint8_t)(pra & io_joystick2()); break;
+    case 0x1:
+        if (pra == 0xff) retval = 0xff;
+        else if (pra)
+        {
+            int col = 0;
+            uint8_t v = (uint8_t)~pra;
+            while (v >>= 1)
+                col++;
+            retval = io_keyboard_matrix_row(col);
+        }
+        break;
+    case 0x4: retval = (uint8_t)(timer_a_counter & 0x00ff); break;
+    case 0x5: retval = (uint8_t)((timer_a_counter & 0xff00) >> 8); break;
+    case 0x6: retval = (uint8_t)(timer_b_counter & 0x00ff); break;
+    case 0x7: retval = (uint8_t)((timer_b_counter & 0xff00) >> 8); break;
+    case 0xd:
+        if (timer_a_irq_triggered || timer_b_irq_triggered)
+        {
+            retval |= 1 << 7;
+            if (timer_a_irq_triggered) retval |= 1 << 0;
+            if (timer_b_irq_triggered) retval |= 1 << 1;
+        }
+        break;
+    default: break;
+    }
+    return retval;
+}
+
 bool cia1_emulate(void)
 {
     /* Elapsed REAL time -> C64 cycles (32768 Hz tick ~= 30 C64 cycles),

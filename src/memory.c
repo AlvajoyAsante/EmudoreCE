@@ -12,6 +12,7 @@
 #include "cia2.h"
 #include "vic.h"
 #include "util.h"
+#include "jit.h"
 
 /* The 64 KiB C64 RAM lives in the second half of VRAM (0xD52C00, 76800
    bytes): graphx runs single-buffered so that half is unused, and it is the
@@ -34,6 +35,7 @@ void mem_init(void)
 {
     mem_ram = MEM_RAM_VRAM; /* bytes 0..MEM_LOW_SIZE-1 unused (see ram_low) */
     mem_low = ram_low;
+    jit_reset();
     memset(ram_low, 0, sizeof(ram_low));
     memset(mem_ram + MEM_LOW_SIZE, 0, MEM_SIZE - MEM_LOW_SIZE);
     memset(mem_color_ram, 0, sizeof(mem_color_ram));
@@ -121,6 +123,7 @@ void mem_setup_banks(uint8_t v)
     }
 
     mem_write_byte_no_io(ADDR_MEM_LAYOUT, v);
+    ++jit_mapping_generation;
 }
 
 /* Slow paths for the NULL (IO) pages of the tables in memory.h. */
@@ -143,6 +146,29 @@ uint8_t mem_read_io(uint16_t addr)
     }
     /* VIC registers mirror every 64 bytes across $D000-$D3FF */
     return vic_read_register(addr & 0x3f);
+}
+
+uint8_t mem_debug_peek_cpu(uint16_t addr)
+{
+    U16B a;
+    const uint8_t *p;
+
+    a.w = addr;
+    p = mem_rd_pg[a.b.hi].ptr;
+    if (p)
+        return p[addr];
+    if ((addr & 0xff00) == ADDR_CIA1_PAGE)
+        return cia1_peek_register(addr & 0x0f);
+    if ((addr & 0xff00) == ADDR_CIA2_PAGE)
+        return cia2_peek_register(addr & 0x0f);
+    if (addr >= 0xd400 && addr < 0xd800)
+        return 0;
+    return vic_peek_register(addr & 0x3f);
+}
+
+uint8_t mem_debug_peek_ram(uint16_t addr)
+{
+    return *mem_host_ptr(addr);
 }
 
 void mem_write_io(uint16_t addr, uint8_t v)

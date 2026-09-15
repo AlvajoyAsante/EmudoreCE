@@ -19,6 +19,27 @@
 #define CE_PACKAGE_CART   "CRT"  /* cartridge image built by tools/rom_to_appvar.py */
 #define CE_PACKAGE_DISK   "DSK"  /* D64 file set built by tools/d64_to_appvar.py */
 
+#define CE_PACKAGE_DISK_ID_MAX 4
+
+typedef struct
+{
+	char id[CE_PACKAGE_DISK_ID_MAX + 1];
+	uint32_t size;
+} CEPackageDisk;
+
+/**
+ * Enumerate valid EM64 disk packages installed as AppVars.
+ *
+ * Entries identify package IDs, not individual storage chunks: a multi-chunk
+ * package contributes exactly one entry for chunk zero. The caller owns the
+ * fixed-capacity output buffer.
+ *
+ * @param disks Output array, or NULL when capacity is zero.
+ * @param capacity Number of entries available in disks.
+ * @return Number of valid disk packages found, capped at capacity.
+ */
+uint8_t CEPackageFindDisks(CEPackageDisk *disks, uint8_t capacity);
+
 /**
  * Query the unpacked payload size of a package.
  *
@@ -35,6 +56,18 @@ uint32_t CEPackageSize(const char *packageId);
  * @return Non-zero on success, zero on mismatch or missing data.
  */
 int CEPackageValidate(const char *packageId, uint32_t expectedSize);
+/**
+ * Cheaply check that a package's backing AppVar exists, without opening its
+ * header or reading any payload bytes.
+ *
+ * Much faster than CEPackageValidate() but does not catch a corrupt or
+ * wrong-size file; intended for release builds where boot time matters more
+ * than defending against a hand-corrupted AppVar.
+ *
+ * @param packageId Short package identifier.
+ * @return Non-zero if the package's AppVar is present, zero otherwise.
+ */
+int CEPackageFileExists(const char *packageId);
 /**
  * Map a whole package directly without copying.
  *

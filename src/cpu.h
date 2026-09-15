@@ -9,6 +9,9 @@
 #define EMUDORE_CE_CPU_H
 
 #include <stdint.h>
+void cpu_decimal_adc(uint8_t operand);
+void cpu_decimal_sbc(uint8_t operand);
+void cpu_brk_native(void);
 #include <stdbool.h>
 
 typedef struct
@@ -41,10 +44,24 @@ extern uint8_t cpu_jit_kernal;
    most recent opcode that took one. */
 extern unsigned int cpu_fallbacks;
 extern uint8_t cpu_fallback_op;
+#ifndef NDEBUG
+/* Per-opcode C fallback counts for selecting the next asm-core handler. */
+extern uint16_t cpu_fallback_counts[256];
+/* Bit mask describing the most recent assembly self-test mismatch. */
+extern uint32_t cpu_asm_selftest_mismatch;
+/* C reference bytes from the most recent assembly self-test. */
+extern uint8_t cpu_asm_selftest_ref_mem[4];
+#endif
 
-/* ROM-JIT block hit counters ($E5CD wait-key warps, $F69B UDTIM runs). */
+/* Native block hit counters (KERNAL wait-key, UDTIM, Swirler, dynamic RAM). */
 extern unsigned int cpu_jit_hits;
 extern unsigned int cpu_jit_hits2;
+extern unsigned int cpu_jit_hits3;
+/* Generic DEX/BNE and LDA/STA/INY/BNE dynamic blocks, respectively. */
+extern unsigned int cpu_jit_hits4;
+extern unsigned int cpu_jit_hits5;
+extern unsigned int cpu_jit_copy_attempts;
+extern uint8_t cpu_jit_copy_stage;
 
 /* diagnostics: BRK executions (runaway code warm-starting BASIC) */
 extern uint16_t cpu_last_brk_pc;
@@ -70,7 +87,6 @@ bool cpu_run(unsigned int until_cycles);
  *
  * @return false on an illegal opcode or trap failure; true otherwise.
  */
-bool cpu_step_slow(void);
 /**
  * Self-test the hybrid eZ80 assembly core against the C core.
  *
@@ -78,15 +94,12 @@ bool cpu_step_slow(void);
  *         core is now enabled for later cpu_run() calls.
  */
 bool cpu_asm_selftest(void);
-/** Force all future execution through the C core only. */
-void cpu_asm_disable(void);
 /**
  * Run one CPU batch with the pure C core only.
  *
  * @param until_cycles Inclusive cycle target for the batch.
  * @return false on an illegal opcode or trap failure; true otherwise.
  */
-bool cpu_run_c(unsigned int until_cycles);
 /**
  * Compare C-core and asm-core execution during KERNAL boot.
  *

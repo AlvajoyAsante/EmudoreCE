@@ -10,6 +10,10 @@
 
 #include <stdbool.h>
 
+#ifndef EMUDORE_CPU_HOT_PROFILE
+#define EMUDORE_CPU_HOT_PROFILE 0
+#endif
+
 /**
  * Bring up the emulated machine.
  *
@@ -70,13 +74,24 @@ void c64_run(void);
  */
 void c64_shutdown(void);
 
-/* Total emulated cycles across c64_run, for the exit speed report. */
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
+/* Total emulated cycles across c64_run, for the debug exit speed report. */
 extern unsigned long c64_total_cycles;
+#endif
 
 #ifndef NDEBUG
 /* Wall-tick profile buckets: 0=cpu_run 1=vic 2=io 3=cia+drive. */
 extern unsigned long c64_prof[4];
 extern unsigned long c64_prof_lines;
+#endif
+
+#if !defined(NDEBUG) || EMUDORE_CPU_HOT_PROFILE
+extern uint16_t c64_hot_pc[2];
+extern uint16_t c64_hot_pc_votes[2];
+extern uint16_t c64_hot_pc_samples[2];
+extern uint8_t c64_hot_bytes[2][8];
+extern uint16_t c64_hot_branch_pc[2];
+extern uint8_t c64_hot_branch_bytes[2][16];
 #endif
 
 #endif /* EMUDORE_CE_C64_H */

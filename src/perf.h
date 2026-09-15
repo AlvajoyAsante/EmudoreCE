@@ -31,6 +31,7 @@ typedef struct {
     unsigned long char_kernel_calls;
     unsigned long sprite_lines;
     uint16_t pc_pages[256];
+    uint16_t pc_hot_offsets[2][256];
 } PerfStats;
 
 typedef struct {

@@ -22,17 +22,13 @@ static void rebuild(BrowserModel *model, uint16_t previous_entry)
 {
     uint16_t index;
     uint16_t previous_row = model->selected;
-    bool found = previous_entry == 0;
+    bool found = false;
 
-    model->count = 1;
-    model->entries[0] = 0;
-    if (found)
-        model->selected = 0;
+    model->count = 0;
     for (index = 0; index < model->file_count; ++index)
     {
         if (model->preferences.view == BROWSER_LAUNCHERS &&
-            (!browser_flag(model->preferences.launchers, (uint8_t)index) ||
-             browser_flag(model->preferences.hidden, (uint8_t)index)))
+            !browser_flag(model->preferences.launchers, (uint8_t)index))
             continue;
         model->entries[model->count] = index + 1;
         if (index + 1 == previous_entry)
@@ -54,10 +50,10 @@ void browser_model_init(BrowserModel *model, uint8_t file_count,
     memset(model, 0, sizeof(*model));
     if (preferences)
         model->preferences = *preferences;
-    if (model->preferences.view > BROWSER_LAUNCHERS)
-        model->preferences.view = BROWSER_ALL_FILES;
+    memset(model->preferences.hidden, 0, sizeof(model->preferences.hidden));
+    model->preferences.view = BROWSER_ALL_FILES;
     model->file_count = file_count;
-    rebuild(model, 0);
+    rebuild(model, UINT16_MAX);
 }
 
 uint16_t browser_model_entry(const BrowserModel *model)
@@ -100,9 +96,4 @@ static bool toggle_flag(BrowserModel *model, uint8_t *flags)
 bool browser_model_launcher(BrowserModel *model)
 {
     return toggle_flag(model, model->preferences.launchers);
-}
-
-bool browser_model_hide(BrowserModel *model)
-{
-    return toggle_flag(model, model->preferences.hidden);
 }

@@ -89,6 +89,9 @@ typedef struct
 
 _Static_assert(sizeof(VicCharTestScratch) == 4816, "Character test scratch size");
 
+#if defined(__clang__)
+__attribute__((__minsize__, noinline))
+#endif
 static bool char_test_guard(const uint8_t *bytes, size_t length)
 {
     while (length != 0)
@@ -100,6 +103,9 @@ static bool char_test_guard(const uint8_t *bytes, size_t length)
     return true;
 }
 
+#if defined(__clang__)
+__attribute__((__minsize__, noinline))
+#endif
 static void char_test_reference(uint8_t *pixels, uint8_t data, uint8_t color,
                                 uint8_t multicolor, uint8_t bg0,
                                 uint8_t bg1, uint8_t bg2)
@@ -126,6 +132,9 @@ static void char_test_reference(uint8_t *pixels, uint8_t data, uint8_t color,
     }
 }
 
+#if defined(__clang__)
+__attribute__((__minsize__, noinline))
+#endif
 static bool char_test_case(VicCharTestScratch *scratch, uint8_t first_code,
                            uint8_t color, uint8_t cells, uint8_t rows,
                            uint8_t start_row, uint16_t left, uint8_t multicolor,
@@ -214,6 +223,9 @@ static bool char_test_case(VicCharTestScratch *scratch, uint8_t first_code,
                            (size_t)(scratch->pixels + sizeof(scratch->pixels) - actual));
 }
 
+#if defined(__clang__)
+__attribute__((__minsize__))
+#endif
 bool vic_char_selftest(void)
 {
     static const uint8_t backgrounds[][3] = {
