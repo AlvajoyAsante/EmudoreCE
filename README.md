@@ -22,6 +22,7 @@ The most relevant project docs are:
 - [docs/performance.md](docs/performance.md) — current rendering and validation workflow
 - [docs/startup-memory.md](docs/startup-memory.md) — TI-OS memory limits and linker constraints
 - [docs/jit-performance-handoff.md](docs/jit-performance-handoff.md) — JIT profiling and re-entry notes
+- [docs/jit-game-crash-investigation.md](docs/jit-game-crash-investigation.md) — active 10K and input-driven Parallax target-crash investigation
 - [docs/emudore-ce.md](docs/emudore-ce.md) — development notes and verified behavior, including hot-path fixes and CE-specific caveats
 
 ## Features
@@ -41,27 +42,46 @@ Controls are not a single fixed profile for every C64 title. Many titles depend 
 
 When a disk package is installed, the browser shows a scrolling file list, a selected-file information panel, and launcher/view preferences. It uses the existing visible framebuffer and does not draw into C64 RAM.
 
-- Up / Down: move selection
-- Left / Right: page through entries
-- Y= : toggle Launchers / All Files
-- ALPHA : mark or unmark the selected file as a launcher
-- TRACE : return to the previous browser state or exit the browser flow
-- ENTER : open the selected program or BASIC without a disk
-- CLEAR : save browser preferences and quit
+| Key | Action |
+| --- | --- |
+| `UP` / `DOWN` | Move selection |
+| `LEFT` / `RIGHT` | Move one page |
+| `Y=` | Toggle Launchers / All Files |
+| `ALPHA` | Mark or unmark the selected file as a launcher |
+| `TRACE` | Return to the previous browser state or exit the browser flow |
+| `ENTER` | Open the selected program, or BASIC without a disk |
+| `CLEAR` | Save browser preferences and quit |
 
 The browser persists launcher assignments and the selected view in a separate AppVar, while keeping support files available to the C64 loader even when they are not currently shown in the browser UI. See [tests/browser/README.md](tests/browser/README.md) for browser regression coverage.
 
 ### Calculator keys and menu settings
 
-Press GRAPH during emulation to pause and open the settings menu. GRAPH again or ENTER on Resume closes the menu. The emulator exposes the standard TI-84+ CE key mapping plus the project’s C64-style function-key setup.
+Press `GRAPH` during emulation to pause and open the settings menu. Press `GRAPH` again or choose `Resume` with `ENTER` to continue. The emulator exposes the standard TI-84+ CE key mapping plus the project’s C64-style function-key setup.
 
-The optimization menu keeps the current production settings:
+| Key | Default C64 action | Alternate / modifier action |
+| --- | --- | --- |
+| `Y=` | `F1` | `2nd + Y=` toggles alpha lock |
+| `WINDOW` | `F3` | `2nd + WINDOW` toggles Turbo CPU/RAM between `1x` and `200x` |
+| `ZOOM` | `F5` | `2nd + ZOOM` toggles frame skipping |
+| `TRACE` | `F7` | `2nd + TRACE` toggles VRAM view |
+| `GRAPH` | Pause / Settings | Unchanged |
+| `MODE` | Commodore `C=` | Unchanged |
+| `VARS` | `RUN/STOP` | Unchanged |
+| `ARROWS` | Joystick port 2 and cursor keys | Unchanged |
+| `2nd` | Joystick fire and symbol layer | `2nd + key` enables the hotkeys above |
+| `ALPHA` | Printed letter layer on digit keys | Locks the letter layer while held or toggled by `2nd + Y=` |
+| `CLEAR` | Quit emulator | Unchanged |
 
-- Turbo CPU/RAM: 1x, 50x, 100x, 200x, Adaptive
-- Frame skip: Adaptive or off
-- Key indicators: enabled by default when the menu is active
+The menu and indicator state reflects the active toggles in the running session:
 
-Use 1x for normal compatibility testing. Higher multipliers change CPU/device timing ratios and can disturb timing-sensitive games. They do not add calculator clock speed or guarantee improved gameplay.
+| Setting | Current behavior |
+| --- | --- |
+| Turbo CPU/RAM | `1x`, `50x`, `100x`, `200x`, or `Adaptive` |
+| Frame skip | `Adaptive` or `Off` |
+| Key indicators | Enabled by default in the MENU overlay |
+| Function keys | Even/odd bank selection is handled in the active key indicator state |
+
+Use `1x` for normal compatibility testing. Higher multipliers change CPU/device timing ratios and can disturb timing-sensitive games. They do not add calculator clock speed or guarantee improved gameplay.
 
 ## Build
 
@@ -115,6 +135,13 @@ make PROFILE=1
 ```
 
 The release image is `bin/EMUDORE.8xp`; the profiling build is in `bin/profile`. The profile binary reports sampled emulated/render FPS, frame timings, and the relevant hot-path details after emulation exits. The memory-limited startup path and compressed-image constraints are described in [docs/startup-memory.md](docs/startup-memory.md).
+
+## Screenshots
+
+|  |  |  |
+| --- | --- | --- |
+| ![Demo 1](docs/screenshots/demo%201.png) <br> Demo 1 | ![Demo 2](docs/screenshots/demo%202.png) <br> Demo 2 | ![Demo 3](docs/screenshots/demo%203.png) <br> Demo 3 |
+| ![Parallax](docs/screenshots/paralax.png) <br> Parallax | ![Pac-Man](docs/screenshots/packman.png) <br> Pac-Man |  |
 
 ## Notes
 
