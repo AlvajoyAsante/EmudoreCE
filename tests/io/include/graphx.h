@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+typedef int gfx_location_t;
+
 extern uint8_t *const gfx_vram;
 extern uint16_t *const gfx_palette;
 

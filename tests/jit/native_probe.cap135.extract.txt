@@ -1,0 +1,20 @@
+﻿"G:/Other computers/My Laptop/TI Projects/2026/emudore/tests/jit/throttle_tests.cap135-1758839f.exe"
+THROTTLE requested_percent=135 throttle=on cpu_hz=48000000 quantum_hz=1000
+CALIBRATION simulated_seconds=2.000000 wall_seconds=1.481644 achieved_percent=134.985
+PASS 135% throttle, HALT elapsed time, scheduler rollover, reset and early-stop accounting
+THROTTLE requested_percent=135 throttle=on simulated_seconds=2.000999 wall_seconds=1.483151 achieved_percent=134.915 late_rebases=0
+THROTTLE requested_percent=135 throttle=on cpu_hz=48000000 quantum_hz=1000
+PASS ROM-less eZ80 ADL execution
+THROTTLE requested_percent=135 throttle=on simulated_seconds=0.001000 wall_seconds=0.001317 achieved_percent=75.891 late_rebases=0
+"G:/Other computers/My Laptop/TI Projects/2026/emudore/tests/jit/target_tests.cap135-1758839f.exe" "../../bin/EMUDORE.obj" --benchmark-only
+THROTTLE requested_percent=135 throttle=on cpu_hz=48000000 quantum_hz=1000
+PASS compiled no-ROM startup displays ROM AppVars missing and returns (library calls stubbed)
+PASS target/host machine-code byte parity before native entry
+PASS CEdev-compiled emitter, native execution bridge, JIT startup self-test
+PASS target CPU assembly self-test
+BENCH warm arithmetic, 32 x 63 guest cycles: JIT=190048 ASM=433312 eZ80 clocks; ASM/JIT=2.280
+BENCH warm direct RAM reads, 32 x 75 guest cycles: JIT=223808 ASM=428416 eZ80 clocks; ASM/JIT=1.914
+BENCH warm indexed RAM copy, 32 x 63 guest cycles: JIT=395072 ASM=419584 eZ80 clocks; ASM/JIT=1.062
+BENCH warm RAM increment, 32 x 64 guest cycles: JIT=281056 ASM=290494 eZ80 clocks; ASM/JIT=1.034
+PASS target integration: 256 cases, 489 production C ABI calls in CEmu
+THROTTLE requested_percent=135 throttle=on simulated_seconds=0.634958 wall_seconds=0.471138 achieved_percent=134.771 late_rebases=0

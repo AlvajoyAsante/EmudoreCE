@@ -1,3 +1,6 @@
+# Local LLM
+.continue
+
 # VS Code files
 *~
 .vs/
@@ -19,3 +22,15 @@ convimg.out
 
 .venv/
 */__pycache__/
+
+# Test build artifacts
+*.exe
+tests/*/build/
+
+# TI calculator variable/appvar files
+*.8xv
+
+# Ad-hoc test/debug logs
+*.log
+jit-result*.txt
+.__query_out.txt

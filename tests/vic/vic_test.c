@@ -74,6 +74,7 @@ static unsigned int host_char_kernel_calls;
 
 CpuState cpu;
 uint8_t cpu_warp;
+uint8_t jit_page_generation[256];
 uint8_t *mem_ram = host_ram;
 uint8_t *mem_low = host_low_ram;
 uint8_t mem_color_ram[0x400];
@@ -81,7 +82,7 @@ uint8_t mem_color_ram[0x400];
 uint32_t timer_Get(unsigned int timer)
 {
     (void)timer;
-    return host_timer_ticks;
+    return host_timer_ticks++;
 }
 
 void cpu_irq(void)
@@ -130,6 +131,14 @@ void io_screen_draw_border(int frame_y, uint8_t color)
 void io_screen_refresh(void)
 {
     ++host_refresh_count;
+}
+
+void io_refresh_vram_view(void)
+{
+}
+
+void io_refresh_debug_view(void)
+{
 }
 
 static void reset_bitmap_adapters(void)
@@ -183,6 +192,7 @@ void vic_expand_hires_row(void)
     }
     corrupt_bitmap_output(0);
 }
+
 
 void vic_expand_mc_row(void)
 {
@@ -597,6 +607,7 @@ static void reset_fixture(void)
     host_char_kernel_calls = 0;
 #endif
     render_requested = false;
+    frame_skip_enabled = false;
     hires_asm_ready = false;
     mc_asm_ready = false;
     vic_wtrace_pos = 0;
@@ -1597,6 +1608,29 @@ static void test_collision_read_catchup(void)
     EXPECT_EQ(vic_read_register(0x1f), 0);
 }
 
+static void test_collision_skipped_frame(void)
+{
+    uint8_t previous[HOST_WIDTH];
+    prepare_display();
+    prepare_sprite(0, 24, 50, 2);
+    prepare_sprite(1, 24, 50, 5);
+    vic_write_register(0x1b, 3);
+    sprite_data(0)[0] = sprite_data(1)[0] = 0x80;
+    prepare_glyph(0x80, 0);
+    memcpy(previous, host_framebuffer[20].pixels, sizeof(previous));
+    render_frame = false;
+    advance_to_raster(52);
+    EXPECT_EQ(vic_read_register(0x1e), 3);
+    EXPECT_EQ(vic_read_register(0x1f), 3);
+    EXPECT_EQ(vic_read_register(0x1e), 0);
+    EXPECT_EQ(vic_read_register(0x1f), 0);
+    EXPECT_EQ(spr_row[0], 1);
+    EXPECT_EQ(spr_row[1], 1);
+    expect_row(20, previous);
+    EXPECT_EQ(composed_count, 0);
+    check_framebuffer_guards();
+}
+
 static void test_pal_raster_timing(void)
 {
     EXPECT_EQ(VIC_SCREEN_LINES, 312);
@@ -1617,6 +1651,135 @@ static void test_pal_raster_timing(void)
     EXPECT_EQ(host_refresh_count, 1);
 }
 
+static void test_d011_raster_preservation(void)
+{
+    static const uint8_t control_values[] = {0x1b, 0x9b};
+    unsigned int index;
+
+    advance_to_raster(260);
+    vic_write_register(0x12, 0x27);
+    for (index = 0; index < sizeof(control_values); ++index)
+    {
+        vic_write_register(0x11, control_values[index]);
+        EXPECT_EQ(get_raster_counter(), 260);
+        EXPECT_EQ(vic_read_register(0x11), 0x9b);
+        EXPECT_EQ(vic_read_register(0x12), 4);
+        EXPECT_EQ(raster_irq, index ? 0x127 : 0x27);
+    }
+
+    reset_fixture();
+    advance_to_raster(42);
+    vic_write_register(0x11, 0x9b);
+    EXPECT_EQ(get_raster_counter(), 42);
+    EXPECT_EQ(vic_read_register(0x11), 0x1b);
+    EXPECT_EQ(raster_irq, 0x100);
+
+    reset_fixture();
+    for (index = 0; index < 2 * VIC_SCREEN_LINES; ++index)
+    {
+        vic_write_register(0x11, control_values[index & 1]);
+        cpu.cycles = vic_raster_due;
+        EXPECT_EQ(vic_emulate(), true);
+    }
+    EXPECT_EQ(vic_frames(), 2);
+    EXPECT_EQ(host_refresh_count, 2);
+    EXPECT_EQ(get_raster_counter(), 0);
+}
+
+static void test_cpu_turbo_timing(void)
+{
+    static const uint8_t multipliers[] = {1, 50, 100, 200};
+    unsigned int deadline;
+
+    vic_reset();
+    EXPECT_EQ(cpu_turbo_multiplier, 1);
+    EXPECT_EQ(cpu_turbo_adaptive, false);
+    EXPECT_EQ(frame_skip_enabled, true);
+    reset_fixture();
+    deadline = vic_raster_due;
+    cpu.cycles = deadline;
+    EXPECT_EQ(vic_emulate(), true);
+    EXPECT_EQ(vic_raster_due, deadline + VIC_LINE_CYCLES);
+
+    reset_fixture();
+    vic_set_cpu_turbo(50);
+    deadline = vic_raster_due;
+    cpu.cycles = deadline;
+    EXPECT_EQ(vic_emulate(), true);
+    EXPECT_EQ(vic_raster_due, deadline + 50 * VIC_LINE_CYCLES);
+
+    host_timer_ticks = 100;
+    vblank_reset(&frame_pacer, host_timer_ticks);
+    vic_vblank();
+    EXPECT_EQ(host_timer_ticks, 101);
+    EXPECT_EQ(frame_pacer.deadline, 100);
+
+    vic_set_cpu_turbo(1);
+    host_timer_ticks = 100;
+    vblank_reset(&frame_pacer, host_timer_ticks);
+    vic_vblank();
+    EXPECT_EQ(host_timer_ticks, 756);
+
+    vic_reset();
+    deadline = vic_raster_due;
+    cpu.cycles = deadline;
+    EXPECT_EQ(vic_emulate(), true);
+    EXPECT_EQ(vic_raster_due, deadline + VIC_LINE_CYCLES);
+
+    for (unsigned int mode = 0; mode < 4; ++mode)
+    {
+        reset_fixture();
+        vic_set_cpu_turbo(multipliers[mode]);
+        vic_set_frame_skip(true);
+        vic_write_register(0x11, 0x1b);
+        for (unsigned int frame = 0; frame < 6; ++frame)
+        {
+            uint32_t frame_started;
+            host_timer_ticks += 2000;
+            frame_started = host_timer_ticks;
+            for (unsigned int raster = 0; raster < VIC_SCREEN_LINES; ++raster)
+            {
+                unsigned int line_cycles = is_bad_line()
+                    ? VIC_BAD_LINE_CYCLES : VIC_LINE_CYCLES;
+                line_cycles *= multipliers[mode];
+                deadline = vic_raster_due;
+                cpu.cycles = deadline;
+                EXPECT_EQ(vic_emulate(), true);
+                EXPECT_EQ(vic_raster_due, deadline + line_cycles);
+            }
+            EXPECT_EQ(host_timer_ticks, frame_started + 1);
+            EXPECT_EQ(frame_pacer.skipped, (frame + 1) % 3);
+            EXPECT_EQ(render_frame, (frame + 1) % 3 == 0);
+            EXPECT_EQ(vic_frames(), frame + 1);
+        }
+        EXPECT_EQ(rendered_frame_count, 2);
+        vic_set_frame_skip(false);
+        EXPECT_EQ(render_frame, true);
+    }
+
+    vic_set_cpu_turbo(255);
+    EXPECT_EQ(cpu_turbo_multiplier, 200);
+    vic_set_cpu_turbo(0);
+    EXPECT_EQ(cpu_turbo_multiplier, 1);
+    vic_set_cpu_turbo_adaptive(true);
+    EXPECT_EQ(cpu_turbo_adaptive, true);
+    EXPECT_EQ(cpu_turbo_multiplier, 1);
+    host_timer_ticks = 100;
+    vic_vblank();
+    host_timer_ticks = 200;
+    vic_vblank();
+    EXPECT_EQ(cpu_turbo_multiplier, (32768u / TURBO_ADAPTIVE_TARGET_FPS) / 100u);
+    host_timer_ticks = 201;
+    vic_vblank();
+    EXPECT_EQ(cpu_turbo_multiplier, 200);
+    host_timer_ticks = 2000201;
+    vic_vblank();
+    EXPECT_EQ(cpu_turbo_multiplier, 1);
+    vic_set_cpu_turbo_adaptive(false);
+    EXPECT_EQ(cpu_turbo_adaptive, false);
+}
+
+#if !EMUDORE_FRAME_SKIP
 static void test_pal_every_frame(void)
 {
     uint8_t expected[HOST_WIDTH];
@@ -1643,6 +1806,71 @@ static void test_pal_every_frame(void)
         expect_untouched_outside(20, 219);
     }
 }
+#else
+static void run_frame(void)
+{
+    unsigned int raster;
+    for (raster = 0; raster < VIC_SCREEN_LINES; ++raster)
+    {
+        cpu.cycles = vic_raster_due;
+        EXPECT_EQ(vic_emulate(), true);
+    }
+}
+
+static void test_frame_pacing(void)
+{
+    uint8_t expected[HOST_WIDTH];
+
+    prepare_display();
+    vic_set_frame_skip(true);
+    host_timer_ticks = 2000;
+    vic_write_register(0x21, 2);
+    run_frame();
+    EXPECT_EQ(render_frame, false);
+    for (unsigned int frame = 0; frame < 2; ++frame)
+    {
+        host_timer_ticks += 2000;
+        vic_write_register(0x21, (uint8_t)(frame + 3));
+        run_frame();
+    }
+    EXPECT_EQ(vic_frames(), 3);
+    EXPECT_EQ(rendered_frame_count, 1);
+    EXPECT_EQ(render_frame, true);
+    memset(expected, 2, sizeof(expected));
+    expect_row(20, expected);
+
+    host_timer_ticks += 2000;
+    vic_write_register(0x21, 5);
+    run_frame();
+    EXPECT_EQ(render_frame, false);
+    EXPECT_EQ(rendered_frame_count, 2);
+    memset(expected, 5, sizeof(expected));
+    expect_row(20, expected);
+
+    vic_request_render();
+    host_timer_ticks += 2000;
+    run_frame();
+    EXPECT_EQ(render_frame, true);
+
+    vic_set_frame_skip(false);
+    host_timer_ticks += 2000;
+    run_frame();
+    EXPECT_EQ(render_frame, true);
+
+    reset_fixture();
+    host_timer_ticks = UINT32_MAX - 300u;
+    vblank_reset(&frame_pacer, host_timer_ticks);
+    advance_to_raster(VIC_SCREEN_LINES - 1);
+    unsigned int final_cycles = vic_raster_due;
+    cpu.cycles = final_cycles;
+    EXPECT_EQ(vic_emulate(), true);
+    EXPECT_EQ(vic_frames(), 1);
+    EXPECT_EQ(cpu.cycles, final_cycles);
+    EXPECT_EQ(vic_raster_due, final_cycles + VIC_LINE_CYCLES);
+    EXPECT_EQ((uint32_t)(host_timer_ticks - (UINT32_MAX - 300u)), 656);
+    EXPECT_EQ(render_frame, true);
+}
+#endif
 
 static void prepare_char_display(unsigned int mode, unsigned int scroll)
 {
@@ -1879,8 +2107,15 @@ static const VicTest test_cases[] = {
     {"collision-all-foreground", test_collision_all_foreground},
     {"collision-clear-on-read", test_collision_clear_on_read},
     {"collision-read-catchup", test_collision_read_catchup},
+    {"collision-skipped-frame", test_collision_skipped_frame},
     {"pal-raster-timing", test_pal_raster_timing},
+    {"d011-raster-preservation", test_d011_raster_preservation},
+    {"cpu-turbo-timing", test_cpu_turbo_timing},
+#if EMUDORE_FRAME_SKIP
+    {"frame-pacing", test_frame_pacing},
+#else
     {"pal-every-frame", test_pal_every_frame},
+#endif
     {"char-selftest", test_char_selftest},
     {"char-tables", test_char_tables},
     {"char-color-invalidation", test_char_color_invalidation},

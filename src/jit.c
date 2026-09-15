@@ -15,6 +15,7 @@ extern uint8_t jit_run_fast(unsigned int until_cycles);
 extern uint8_t jit_run_batch_fast(unsigned int until_cycles);
 extern void jit_read_bridge(void);
 extern void jit_write_bridge(void);
+extern bool jit_execute_block(const void *block);
 
 typedef struct
 {
@@ -254,7 +255,7 @@ bool jit_run(unsigned int until_cycles)
             ++jit_native_mismatches;
             return false;
         }
-        if (!jit_execute(block->native + 1))
+        if (!jit_execute_block(block))
             return false;
         ++jit_native_hits;
         return true;

@@ -1,0 +1,19 @@
+diff --git a/src/vrEmu6502.c b/src/vrEmu6502.c
+--- a/src/vrEmu6502.c
++++ b/src/vrEmu6502.c
+@@ -753,8 +753,8 @@ static uint16_t ind(VrEmu6502* vr6502)
+   {
+     /* 6502 had a bug if the low byte was $ff, the high address would come from
+        the same page rather than the next page */
+-    uint16_t addr = read16Bug(vr6502, vr6502->pc++);
+-    return read16(vr6502, addr);
++    uint16_t addr = read16(vr6502, vr6502->pc++);
++    return read16Bug(vr6502, addr);
+   }
+ 
+   uint16_t addr = read16(vr6502, vr6502->pc++);
+@@ -2052,3 +2052,3 @@
+   /* 8_ */ {nop, imm, 2}, {sta, xin, 6}, {nop, imm, 2}, {sax, xin, 6}, {sty,  zp, 3}, {sta,  zp, 3}, {stx,  zp, 3}, {sax,  zp, 3}, {dey, imp, 2}, {nop, imm, 2}, {txa, imp, 2}, {ane, imm, 2}, {sty,  ab, 4}, {sta,  ab, 4}, {stx,  ab, 4}, {sax,  ab, 4},
+-  /* 9_ */ {bcc, rel, 2}, {sta, yin, 6},      kil     , {sha, zpy, 6}, {sty, zpx, 4}, {sta, zpx, 4}, {stx, zpy, 4}, {sax, zpy, 4}, {tya, imp, 2}, {sta, aby, 5}, {txs, imp, 2}, {tas, aby, 5}, {shy, abx, 5}, {sta, abx, 5}, {shx, aby, 5}, {sha, aby, 5},
++  /* 9_ */ {bcc, rel, 2}, {sta, yin, 6},      kil     , {sha, yin, 6}, {sty, zpx, 4}, {sta, zpx, 4}, {stx, zpy, 4}, {sax, zpy, 4}, {tya, imp, 2}, {sta, aby, 5}, {txs, imp, 2}, {tas, aby, 5}, {shy, abx, 5}, {sta, abx, 5}, {shx, aby, 5}, {sha, aby, 5},
+   /* A_ */ {ldy, imm, 2}, {lda, xin, 6}, {ldx, imm, 2}, {lax, xin, 6}, {ldy,  zp, 3}, {lda,  zp, 3}, {ldx,  zp, 3}, {lax,  zp, 3}, {tay, imp, 2}, {lda, imm, 2}, {tax, imp, 2}, {lxa, imm, 2}, {ldy,  ab, 4}, {lda,  ab, 4}, {ldx,  ab, 4}, {lax,  ab, 4},
