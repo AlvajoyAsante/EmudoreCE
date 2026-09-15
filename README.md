@@ -313,6 +313,7 @@ Current version: 0.1.0-alpha
 - Platform: TI-84 Plus CE
 - Original hardware: Commodore 64 and its software ecosystem
 - Project status: emulator development focused on C64 compatibility and portable calculator execution
+- Reference: [emudore](https://github.com/marioballano/emudore) by Mario Ballano, a C64 emulator whose source assisted this project's early development
 
 ---
 Copyright 2026 Alvajoy "Alvajoy123" Asante. All rights reserved.
