@@ -10,7 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 import optimize_appvar as optimizer
-import rom_to_appvar as rta
+import appvar_builder as rta
 from test_rom_to_appvar import make_d64
 
 

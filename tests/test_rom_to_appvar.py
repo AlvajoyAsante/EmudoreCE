@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-import d64_to_appvar
-from rom_to_appvar import (
+import rom_to_appvar
+from appvar_builder import (
     COMPRESSION_LZSS,
     COMPRESSION_NONE,
     HEADER,
@@ -101,8 +101,8 @@ class RomToAppVarTests(unittest.TestCase):
 def make_d64(files):
     """Build a minimal 35-track d64 with the given (name, type_byte, data)
     files laid out on consecutive sectors of track 1."""
-    image = bytearray(d64_to_appvar.D64_SIZE_35_TRACKS)
-    dir_offset = d64_to_appvar.sector_offset(18, 1)
+    image = bytearray(rom_to_appvar.D64_SIZE_35_TRACKS)
+    dir_offset = rom_to_appvar.sector_offset(18, 1)
     track, sector = 1, 0
 
     for slot, (name, type_byte, data) in enumerate(files):
@@ -115,7 +115,7 @@ def make_d64(files):
 
         remaining = data
         while True:
-            block = d64_to_appvar.sector_offset(track, sector)
+            block = rom_to_appvar.sector_offset(track, sector)
             sector += 1
             if len(remaining) <= 254:
                 image[block + 0] = 0
@@ -130,6 +130,30 @@ def make_d64(files):
     return bytes(image)
 
 
+def make_t64(files):
+    """Build a minimal T64 from (name, entry_type, file_type, start, data) records."""
+    image = bytearray(rom_to_appvar.T64_HEADER_SIZE + len(files) * rom_to_appvar.T64_DIRECTORY_ENTRY)
+    signature = b"C64S tape file"
+    image[:len(signature)] = signature
+    image[0x20:0x22] = (0x0100).to_bytes(2, "little")
+    image[0x22:0x24] = len(files).to_bytes(2, "little")
+    image[0x24:0x26] = len(files).to_bytes(2, "little")
+    data_offset = len(image)
+    data = bytearray()
+    for index, (name, entry_type, file_type, start, program) in enumerate(files):
+        entry = rom_to_appvar.T64_HEADER_SIZE + index * rom_to_appvar.T64_DIRECTORY_ENTRY
+        image[entry] = entry_type
+        image[entry + 1] = file_type
+        image[entry + 2:entry + 4] = start.to_bytes(2, "little")
+        image[entry + 4:entry + 6] = (start + len(program)).to_bytes(2, "little")
+        image[entry + 8:entry + 12] = data_offset.to_bytes(4, "little")
+        image[entry + 16:entry + 32] = name.ljust(16, b" ")
+        if entry_type:
+            data += program
+            data_offset += len(program)
+    return bytes(image + data)
+
+
 class D64ToAppVarTests(unittest.TestCase):
     def test_payload_packs_closed_prg_files_only(self):
         boot = b"\x01\x08" + bytes(50)
@@ -141,7 +165,7 @@ class D64ToAppVarTests(unittest.TestCase):
             (b"PART1", 0x82, part),                # closed PRG
         ])
 
-        payload = d64_to_appvar.build_payload(image)
+        payload = rom_to_appvar.build_payload(image)
 
         self.assertEqual(payload[0], 2)
         entry0 = payload[1:23]
@@ -162,14 +186,37 @@ class D64ToAppVarTests(unittest.TestCase):
         data = b"\x00\x60" + bytes(i & 0xFF for i in range(5000))
         image = make_d64([(b"BIG", 0x82, data)])
 
-        extracted = d64_to_appvar.extract_file(image, 1, 0)
+        extracted = rom_to_appvar.extract_file(image, 1, 0)
 
         self.assertEqual(extracted, data)
 
     def test_rejects_disk_without_prg_files(self):
         image = make_d64([(b"NOTES", 0x81, b"ab")])
         with self.assertRaisesRegex(ValueError, "no closed PRG"):
-            d64_to_appvar.build_payload(image)
+            rom_to_appvar.build_payload(image)
+
+    def test_t64_payload_packs_normal_prg_files_only(self):
+        image = make_t64([
+            (b"BOOT", 1, 0x82, 0x0801, b"\x60"),
+            (b"NOTES", 1, 0x81, 0x1000, b"ignored"),
+            (b"DELETED", 0, 0x82, 0x2000, b"ignored"),
+        ])
+
+        payload, file_types = rom_to_appvar.build_t64_payload(image)
+
+        self.assertEqual(payload[0], 1)
+        self.assertEqual(payload[1:17], b"BOOT".ljust(16, b"\xa0"))
+        offset = int.from_bytes(payload[17:20], "little")
+        size = int.from_bytes(payload[20:23], "little")
+        self.assertEqual(payload[offset:offset + size], b"\x01\x08\x60")
+        self.assertEqual(file_types, b"\x82")
+
+    def test_t64_rejects_entry_data_past_end(self):
+        image = bytearray(make_t64([(b"BAD", 1, 0x82, 0x0801, b"\x60")]))
+        image[rom_to_appvar.T64_HEADER_SIZE + 8:rom_to_appvar.T64_HEADER_SIZE + 12] = (0xFFFF).to_bytes(4, "little")
+
+        with self.assertRaisesRegex(ValueError, "extends past"):
+            rom_to_appvar.build_t64_payload(bytes(image))
 
 
 if __name__ == "__main__":
