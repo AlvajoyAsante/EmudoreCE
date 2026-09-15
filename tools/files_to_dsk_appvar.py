@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 
-import rom_to_appvar as rta
+import appvar_builder as rta
 
 ENTRY_SIZE = 22
 MAX_FILES = 144

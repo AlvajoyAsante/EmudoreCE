@@ -10,10 +10,11 @@ import json
 from pathlib import Path
 import subprocess
 
-import d64_to_appvar as d64
+import rom_to_appvar as d64
+import disk_metadata
 import disk_optimizations
 import files_to_dsk_appvar as files_converter
-import rom_to_appvar as rta
+import appvar_builder as rta
 
 
 @dataclass(frozen=True)
@@ -228,11 +229,13 @@ def prepare_conversion(
     shared_bytes = 0
 
     if kind == "dsk":
+        source_entries = None
         if len(inputs) == 1 and inputs[0].suffix.lower() == ".d64":
             image = inputs[0].read_bytes()
             if len(image) not in (d64.D64_SIZE_35_TRACKS, d64.D64_SIZE_35_TRACKS + 683):
                 raise ValueError("expected a 35-track D64, optionally with 683 error bytes")
             original_payload = d64.build_payload(image)
+            source_entries = d64.read_directory_entries(image)
         else:
             original_payload = files_converter.build_payload(inputs)
         original_files = read_payload(original_payload)
@@ -251,6 +254,8 @@ def prepare_conversion(
                 "petscii_name_hex": original.name.hex(),
                 "load_address": int.from_bytes(original.data[:2], "little"),
             })
+            if source_entries is not None:
+                record["source_file_type"] = source_entries[index].file_type
             records.append(record)
         unshared = build_payload(changed_files, deduplicate=False)
         payload = optimize_payload(unshared)
@@ -311,22 +316,26 @@ def convert(
     payload, report = prepare_conversion(inputs, kind, profile)
     if require_code_change and not report["files_changed"]:
         raise ValueError("no supported code optimization matched; no new AppVars written. Use normal conversion for this input.")
+    metadata = None
+    if kind == "dsk" and len(inputs) == 1 and inputs[0].suffix.lower() == ".d64":
+        ordered_records = sorted(report["files"], key=lambda record: record["directory_index"])
+        file_types = bytes(record["source_file_type"] for record in ordered_records)
+        metadata = disk_metadata.build_metadata(payload, file_types)
     chunks = rta.build_chunks(payload, kind, len(payload), rta.COMPRESSION_NONE)
     package_id = rta.KINDS[kind][0]
     report_path = output_dir / f"optimization-{kind}.json"
     destinations = [output_dir / f"EC{package_id}{index:02X}.8xv" for index in range(len(chunks))]
+    if metadata is not None:
+        destinations.append(output_dir / f"{disk_metadata.VARIABLE_NAME}.8xv")
     destinations.append(report_path)
     sources = list(inputs)
     if profile is not None:
         sources.append(profile)
         sources.extend(rule.replacement for rule in load_profile(profile) if rule.replacement is not None)
-    for destination in destinations:
-        for source in sources:
-            if destination.resolve() == source.resolve() or (
-                destination.exists() and source.exists() and destination.samefile(source)
-            ):
-                raise ValueError(f"output would overwrite a source file: {destination}")
+    rta.validate_output_paths(destinations, sources)
     outputs = rta.write_chunks(chunks, package_id, output_dir, convbin)
+    if metadata is not None:
+        outputs.append(rta.write_appvar(metadata, disk_metadata.VARIABLE_NAME, output_dir, convbin))
     report["appvars"] = [path.name for path in outputs]
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"{kind}: {len(payload)} uncompressed bytes")

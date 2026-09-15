@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert a .d64 disk image into an emudore CE disk AppVar set (ECDSKnn).
+"""Convert a .d64 disk image or .t64 tape image into emudore CE disk AppVars.
 
 All closed PRG files on the disk are extracted (following their sector
 chains) and packed into one "DSK" package the on-calc drive emulation
@@ -18,17 +18,41 @@ can read files straight out of the archived AppVar):
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import subprocess
 from pathlib import Path
 
+import disk_metadata
 import rom_to_appvar as rta
 
 SECTORS_PER_TRACK = [21] * 17 + [19] * 7 + [18] * 6 + [17] * 5  # tracks 1..35
 DIR_TRACK, DIR_SECTOR = 18, 1
 D64_SIZE_35_TRACKS = 174848
+T64_HEADER_SIZE = 0x40
+T64_DIRECTORY_ENTRY = 32
+T64_HEADER_SIGNATURES = (b"c64 tape image file", b"c64 tape file",
+                         b"c64s tape image file", b"c64s tape file")
 FILE_TYPE_PRG = 2
 DIRECTORY_ENTRY = 22
 MAX_FILES = 144
+PACKAGE_ID_MAX = 4
+
+
+@dataclass(frozen=True)
+class DirectoryEntry:
+    name: bytes
+    track: int
+    sector: int
+    file_type: int
+
+
+@dataclass(frozen=True)
+class TapeEntry:
+    name: bytes
+    start: int
+    end: int
+    offset: int
+    file_type: int
 
 
 def sector_offset(track: int, sector: int) -> int:
@@ -58,9 +82,8 @@ def extract_file(image: bytes, track: int, sector: int) -> bytes:
     return bytes(out)
 
 
-def read_directory(image: bytes) -> list[tuple[bytes, int, int]]:
-    """Return (petscii name[16], start track, start sector) for every closed
-    PRG file, in directory order."""
+def read_directory_entries(image: bytes) -> list[DirectoryEntry]:
+    """Return closed PRGs in directory order, retaining original type flags."""
     files = []
     track, sector = DIR_TRACK, DIR_SECTOR
     seen = set()
@@ -73,9 +96,69 @@ def read_directory(image: bytes) -> list[tuple[bytes, int, int]]:
             # closed (bit7) PRG files only; skip splat/DEL/SEQ/REL entries
             if (file_type & 0x87) != (0x80 | FILE_TYPE_PRG):
                 continue
-            files.append((bytes(entry[3:19]), entry[1], entry[2]))
+            files.append(DirectoryEntry(bytes(entry[3:19]), entry[1], entry[2], file_type))
         track, sector = block[0], block[1]
     return files
+
+
+def read_directory(image: bytes) -> list[tuple[bytes, int, int]]:
+    """Return (petscii name[16], start track, start sector) for closed PRGs."""
+    return [(entry.name, entry.track, entry.sector) for entry in read_directory_entries(image)]
+
+
+def read_t64_directory_entries(image: bytes) -> list[TapeEntry]:
+    if len(image) < T64_HEADER_SIZE:
+        raise ValueError("T64 image is shorter than its header")
+    if not any(signature in image[:32].lower() for signature in T64_HEADER_SIGNATURES):
+        raise ValueError("not a T64 tape image")
+
+    entry_count = int.from_bytes(image[0x22:0x24], "little")
+    directory_end = T64_HEADER_SIZE + entry_count * T64_DIRECTORY_ENTRY
+    if directory_end > len(image):
+        raise ValueError("T64 directory extends past the image")
+
+    entries = []
+    for index in range(entry_count):
+        offset = T64_HEADER_SIZE + index * T64_DIRECTORY_ENTRY
+        entry = image[offset:offset + T64_DIRECTORY_ENTRY]
+        entry_type, file_type = entry[0], entry[1]
+        if entry_type == 0:
+            continue
+        if entry_type != 1 or (file_type & 0x07) != FILE_TYPE_PRG:
+            continue
+        start = int.from_bytes(entry[2:4], "little")
+        end = int.from_bytes(entry[4:6], "little")
+        data_offset = int.from_bytes(entry[8:12], "little")
+        if end < start:
+            raise ValueError(f"T64 entry {index} has an invalid address range")
+        data_end = data_offset + end - start
+        if data_offset < directory_end or data_end > len(image):
+            raise ValueError(f"T64 entry {index} data extends past the image")
+        entries.append(TapeEntry(bytes(entry[16:32]).rstrip(b" \0").ljust(16, b"\xa0"),
+                                 start, end, data_offset, file_type))
+    return entries
+
+
+def normalize_package_id(value: str) -> str:
+    package_id = "".join(character for character in value.upper() if character.isalnum())
+    if not package_id:
+        raise ValueError("disk name does not contain a usable AppVar ID")
+    if len(package_id) > PACKAGE_ID_MAX:
+        package_id = package_id[:PACKAGE_ID_MAX]
+    if package_id in {"BAS", "KRN", "CHR", "CRT"}:
+        raise ValueError(f"disk AppVar ID {package_id!r} is reserved")
+    return package_id
+
+
+def disk_package_id(image: bytes, input_path: Path, requested_id: str | None = None) -> str:
+    if requested_id is not None:
+        return normalize_package_id(requested_id)
+    bam = sector_offset(18, 0)
+    label = image[bam + 0x90:bam + 0xA0]
+    name = "".join(chr(byte - 0x80) if 0xC1 <= byte <= 0xDA else chr(byte)
+                   for byte in label if byte != 0xA0)
+    return normalize_package_id(name if any(character.isalnum() for character in name)
+                                else input_path.stem)
 
 
 def build_payload(image: bytes) -> bytes:
@@ -103,27 +186,66 @@ def build_payload(image: bytes) -> bytes:
     return bytes(directory) + b"".join(blobs)
 
 
-def convert(input_path: Path, output_dir: Path, convbin: str) -> list[Path]:
+def build_t64_payload(image: bytes) -> tuple[bytes, bytes]:
+    entries = read_t64_directory_entries(image)
+    if not entries:
+        raise ValueError("no normal PRG files found in the T64 image")
+    if len(entries) > MAX_FILES:
+        raise ValueError(f"too many files ({len(entries)} > {MAX_FILES})")
+
+    blobs = [entry.start.to_bytes(2, "little") + image[entry.offset:entry.offset + entry.end - entry.start]
+             for entry in entries]
+    directory = bytearray([len(entries)])
+    offset = 1 + len(entries) * DIRECTORY_ENTRY
+    for entry, data in zip(entries, blobs):
+        directory += entry.name
+        directory += offset.to_bytes(3, "little")
+        directory += len(data).to_bytes(3, "little")
+        offset += len(data)
+    return bytes(directory) + b"".join(blobs), bytes(entry.file_type for entry in entries)
+
+
+def convert(input_path: Path, output_dir: Path, convbin: str,
+            package_id: str | None = None) -> list[Path]:
     image = input_path.read_bytes()
-    if len(image) not in (D64_SIZE_35_TRACKS, D64_SIZE_35_TRACKS + 683):
+    suffix = input_path.suffix.lower()
+    if suffix == ".d64":
+        if len(image) not in (D64_SIZE_35_TRACKS, D64_SIZE_35_TRACKS + 683):
+            raise ValueError(
+                f"not a 35-track .d64 image ({len(image)} bytes); "
+                "40-track and error-byte variants are not supported"
+            )
+        package_id = disk_package_id(image, input_path, package_id)
+        payload = build_payload(image)
+        file_types = bytes(entry.file_type for entry in read_directory_entries(image))
+    elif suffix == ".t64":
+        package_id = normalize_package_id(package_id if package_id is not None else input_path.stem)
+        payload, file_types = build_t64_payload(image)
+    else:
         raise ValueError(
-            f"not a 35-track .d64 image ({len(image)} bytes); "
-            "40-track and error-byte variants are not supported"
+            f"unsupported input extension {input_path.suffix!r}; expected .d64 or .t64"
         )
 
-    payload = build_payload(image)
     print(f"packed {payload[0]} PRG files, payload {len(payload)} bytes")
 
     # Stored uncompressed on purpose: src/drive.c reads file bytes directly
     # out of the archived AppVar (no RAM to decompress a whole disk into).
     chunks = rta.build_chunks(payload, "dsk", len(payload), rta.COMPRESSION_NONE)
-    return rta.write_chunks(chunks, rta.KINDS["dsk"][0], output_dir, convbin)
+    metadata = disk_metadata.build_metadata(payload, file_types)
+    metadata_name = disk_metadata.variable_name(package_id)
+    metadata_path = output_dir / f"{metadata_name}.8xv"
+    destinations = [output_dir / f"EC{package_id}{index:02X}.8xv" for index in range(len(chunks))]
+    rta.validate_output_paths(destinations + [metadata_path], [input_path])
+    outputs = rta.write_chunks(chunks, package_id, output_dir, convbin)
+    outputs.append(rta.write_appvar(metadata, metadata_name, output_dir, convbin))
+    return outputs
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path, help="input .d64 disk image")
+    parser.add_argument("input", type=Path, help="input .d64 disk image or .t64 tape image")
     parser.add_argument("--output", type=Path, default=Path("bin/rom"))
+    parser.add_argument("--id", dest="package_id", help="1-4 character AppVar package ID")
     parser.add_argument("--convbin", help="path to the CEdev convbin executable")
     return parser.parse_args()
 
@@ -131,7 +253,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        outputs = convert(args.input, args.output, rta.find_convbin(args.convbin))
+        outputs = convert(args.input, args.output, rta.find_convbin(args.convbin), args.package_id)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         raise SystemExit(f"error: {error}") from error
     for output in outputs:
