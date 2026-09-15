@@ -15,3 +15,6 @@ model_tests$(EXEEXT): Makefile model_test.c ../../src/browser_model.c ../../src/
 
 check: all
 	./model_tests$(EXEEXT)
+	$(MAKE) -C drive check
+	$(MAKE) -C storage check
+	$(MAKE) -C ui check

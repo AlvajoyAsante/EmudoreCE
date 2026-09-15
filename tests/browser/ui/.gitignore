@@ -1,0 +1,5 @@
+*.o
+*.d
+*.exe
+/ui_tests
+/snapshots/
