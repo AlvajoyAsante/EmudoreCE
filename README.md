@@ -39,17 +39,17 @@ Controls are not a single fixed profile for every C64 title. Many titles depend 
 
 ### Browser
 
-When a disk package is installed, the browser shows a scrolling file list, a selected-file information panel, and launcher/hide preferences. It uses the existing visible framebuffer and does not draw into C64 RAM.
+When a disk package is installed, the browser shows a scrolling file list, a selected-file information panel, and launcher/view preferences. It uses the existing visible framebuffer and does not draw into C64 RAM.
 
 - Up / Down: move selection
 - Left / Right: page through entries
 - Y= : toggle Launchers / All Files
-- ALPHA : mark or unmark a launcher
-- TRACE : hide or unhide a file
+- ALPHA : mark or unmark the selected file as a launcher
+- TRACE : return to the previous browser state or exit the browser flow
 - ENTER : open the selected program or BASIC without a disk
 - CLEAR : save browser preferences and quit
 
-The browser persists launcher information and visibility in a separate AppVar, and keeps support files available for C64 loader use even when hidden from the UI. See [tests/browser/README.md](tests/browser/README.md) for browser regression coverage.
+The browser persists launcher assignments and the selected view in a separate AppVar, while keeping support files available to the C64 loader even when they are not currently shown in the browser UI. See [tests/browser/README.md](tests/browser/README.md) for browser regression coverage.
 
 ### Calculator keys and menu settings
 
