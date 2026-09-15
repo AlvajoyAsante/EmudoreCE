@@ -1,9 +1,17 @@
 # emudore-CE (C64 on TI-84+CE) port notes
 
-Current graphics changes and verified test commands are in
-[performance.md](performance.md). The notes below include older experiments;
-in particular, compact VRAM staging is not active, and the current nightly
-compiler build uses `-O2`. Treat historical FPS figures as historical results.
+This file is the project’s working design log and hardware notes. It is intentionally a living document: the current verified behavior, build settings, and benchmarking workflow are documented in [performance.md](performance.md), [startup-memory.md](startup-memory.md), and [jit-performance-handoff.md](jit-performance-handoff.md).
+
+The notes below capture the background reasoning and implementation history for the current CE build. They are not a substitute for the active build instructions or the test suite; in particular, the current release path is aligned with the JIT/browser/startup-memory work rather than the older compact-VRAM experiments.
+
+## Current state summary
+
+- Active project target: TI-84 Plus CE, eZ80 toolchain, CEdev build environment
+- Current compiler/build rule: release path stays compatible with the CE ABI and startup memory limits; hot code uses `-Oz` and retains `-fno-omit-frame-pointer`
+- Current focus: browser + disk loading, ROM package handling, memory validation, and JIT re-entry/dispatch correctness
+- Current validation workflow: host tests, native CPU tests, CEmu startup checks, and targeted JIT harness runs in `tests/jit`
+
+Treat older FPS figures, compact-VRAM experiments, and superseded optimization attempts as historical notes only. The current build should be validated against the measured release checks in the project docs above.
 
 ## What was done
 - Pivoted the repo from MiniMSX (MSX/fMSX) to emudore (Commodore 64).

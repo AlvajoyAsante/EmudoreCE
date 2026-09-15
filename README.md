@@ -1,261 +1,124 @@
 # EMUDORE
 
-EMUDORE is a Commodore 64 emulator project built for the TI-84 Plus CE platform. The focus is to recreate the feel and behavior of classic C64 software while running in a compact calculator environment.
+EMUDORE is a Commodore 64 emulator for the TI-84 Plus CE, built around a portable C core with CE-specific I/O, ROM packaging, and a native JIT path for the eZ80 target. The project aims to preserve the behavior of classic C64 software while staying within TI-OS memory and runtime constraints.
 
-This project is centered around the original C64 machine architecture: its CPU, memory map, peripheral behavior, and data formats. It is designed to be modular and portable, with source files split across the main emulator core and a small set of tools for preparing C64 assets.
+The emulator currently includes:
 
-Learn more about the Commodore 64: [C64 Wiki](https://www.c64-wiki.com/)
+- A complete 6510 CPU core and C64 memory map
+- VIC/keyboard/peripheral integration for calculator input and display
+- Browser-driven disk and ROM management for packaged C64 media
+- Native eZ80 JIT dispatch and re-entry checks for hot paths
+- Automatic AppVar generation for ROMs, cartridges, and disk images
+- Release and profiling builds that are validated in CEmu and host-side regression tests
+
+Learn more about the original system: [C64 Wiki](https://www.c64-wiki.com/)
+
+## Current status
+
+The current tree is not a generic C64 port in the abstract; it is the active CE build used for emulator validation, compatibility work, and performance tuning. The JIT, browser, disk packaging, and startup-memory paths are all part of the current design.
+
+The most relevant project docs are:
+
+- [docs/performance.md](docs/performance.md) — current rendering and validation workflow
+- [docs/startup-memory.md](docs/startup-memory.md) — TI-OS memory limits and linker constraints
+- [docs/jit-performance-handoff.md](docs/jit-performance-handoff.md) — JIT profiling and re-entry notes
+- [docs/emudore-ce.md](docs/emudore-ce.md) — development notes and verified behavior, including hot-path fixes and CE-specific caveats
 
 ## Features
 
-- Accurate C64-style CPU and memory emulation
-- Modular emulator structure for the core subsystems
-- Support for ROM dumps, cartridge media, BASIC programs, and disk images
-- C64 asset packaging utilities for calculator-friendly AppVars
-- Color startup browser with file information, launcher lists, and reversible hiding
-- Build system tailored to the CE toolchain and emulator runtime
+- 6510 CPU emulation with ROM/JIT gating and validated native execution paths
+- C64 ROM, cartridge, and disk packaging through calculator AppVars
+- Startup browser with launcher lists, hidden entries, and disk preference persistence
+- TI-84+ CE input mapping, graphics integration, and menu settings
+- Performance profiles for release, CPU-hot diagnostics, and frame-skip control
+- Host and CEmu regression tests covering browser, I/O, VIC, drive, and JIT behavior
 
-## Controls
+## Controls and settings
 
-Controls are not always identical across all games and applications. The C64 ecosystem had a large variety of titles, and many games use different mappings, input conventions, or keyboard-based controls depending on the software.
+Controls are not a single fixed profile for every C64 title. Many titles depend on keyboard input, joystick conventions, or game-specific mappings. The emulator implements the calculator-side conventions used by the project’s graphics and browser UI, while leaving the guest-side behavior to the game itself.
 
-Because of that, the control scheme may differ slightly depending on the game being loaded. In practice:
+### Browser
 
-- Some titles rely on keyboard input rather than a joystick-style layout
-- Some games use different fire, jump, or action bindings
-- Some programs expect different key mappings for movement and commands
-- A game may use a custom control scheme even if it runs on the same emulator core
+When a disk package is installed, the browser shows a scrolling file list, a selected-file information panel, and launcher/hide preferences. It uses the existing visible framebuffer and does not draw into C64 RAM.
 
-Use the game’s instructions or on-screen prompts when available. The emulator should be treated as a flexible C64-compatible environment, not a single hard-coded control profile for every title.
+- Up / Down: move selection
+- Left / Right: page through entries
+- Y= : toggle Launchers / All Files
+- ALPHA : mark or unmark a launcher
+- TRACE : hide or unhide a file
+- ENTER : open the selected program or BASIC without a disk
+- CLEAR : save browser preferences and quit
 
-### C64 Startup Browser
+The browser persists launcher information and visibility in a separate AppVar, and keeps support files available for C64 loader use even when hidden from the UI. See [tests/browser/README.md](tests/browser/README.md) for browser regression coverage.
 
-When a disk package is installed, the startup browser shows a scrolling file
-list and a selected-file information pane. It reaches every packaged PRG,
-including files beyond the old selector's first eight entries. Small icons
-distinguish BASIC, marked launchers, and other PRGs. The interface uses the
-existing single visible framebuffer; it does not draw into C64 RAM or run
-inside the emulation loop.
+### Calculator keys and menu settings
 
-| Browser key | Action |
-| --- | --- |
-| UP / DOWN | Select an entry |
-| LEFT / RIGHT | Move one page |
-| Y= | Switch Launchers / All Files |
-| ALPHA | Mark or unmark the selected file as a launcher |
-| TRACE | Hide or unhide the selected file |
-| ENTER | Open the selected program, or BASIC without a disk |
-| CLEAR | Save changed browser preferences and quit |
+Press GRAPH during emulation to pause and open the settings menu. GRAPH again or ENTER on Resume closes the menu. The emulator exposes the standard TI-84+ CE key mapping plus the project’s C64-style function-key setup.
 
-An unconfigured disk starts in **All Files** with no automatic classification.
-**Launchers** contains only files explicitly marked as launchers and not hidden.
-All Files always includes hidden files, so hiding is reversible. A hidden entry
-keeps its launcher assignment. BASIC is always reachable and cannot be hidden
-or marked. No disk retains the existing direct boot-to-BASIC behavior.
+The optimization menu keeps the current production settings:
 
-Hiding affects this browser only: support files remain present for exact-name,
-wildcard, and supported fastloader requests from the C64. A `.OBJ` suffix does
-not establish whether a file is a launcher or a required dependency. No game
-files are removed, renamed, or rewritten, and TI-OS variable attributes are
-not changed by browser Hide.
+- Turbo CPU/RAM: 1x, 50x, 100x, 200x, Adaptive
+- Frame skip: Adaptive or off
+- Key indicators: enabled by default when the menu is active
 
-The information pane reports **C64 PRG**, user-assigned role, byte size including
-the two-byte PRG header, and the hexadecimal **load address**. That address is
-not necessarily an execution entry point. The browser does not guess a source
-language from filenames or file contents.
-
-**Locked** is read-only: it reports the original C64 DOS file delete-protection
-bit, not a launch restriction or physical disk write protection. New normal and
-optimized D64 conversions emit an optional `ECDINFO.8xv` beside the existing
-`ECDSKnn.8xv` chunks. Transfer that companion with its matching disk to display
-Yes/No. Old packages remain compatible without reconversion; missing, stale, or
-invalid information displays **Unknown**. Standalone PRG/BASIC conversions do
-not have an original disk lock attribute.
-
-Launcher membership, visibility, and the selected view are saved when changed,
-in a separate `ECBRSET` AppVar. It retains eight recently configured disk
-identities with two checksummed snapshots, rather than changing game data.
-Byte-different rebuilt or optimized disks get separate preferences. If a write
-fails, the browser reports it and still permits launching; an archive failure
-can leave a valid preferences copy in RAM. Two snapshots protect incomplete
-writes, not arbitrary power loss during TI-OS garbage collection.
-
-See [tests/browser/README.md](tests/browser/README.md) for host regression tests
-and the limits of mock-font screenshots versus actual CEmu/device verification.
-
-### Calculator Keys and Settings
-
-Press **GRAPH** during emulation to pause and open Settings. Press **GRAPH** again
-or select **Resume** with **ENTER** to continue. **UP/DOWN** selects an item;
-**ENTER** toggles a setting, while **LEFT/RIGHT** selects its value. **CLEAR** or
-**Quit emulator** exits. Menu keys are released before gameplay resumes.
-
-| Calculator key | Default C64 action | Even function-key setting |
-| --- | --- | --- |
-| Y= | F1 | F2 |
-| WINDOW | F3 | F4 |
-| ZOOM | F5 | F6 |
-| TRACE | F7 | F8 |
-| GRAPH | Pause / Settings | Unchanged |
-| MODE | Commodore C= | Unchanged |
-| VARS | RUN/STOP | Unchanged |
-| Arrows | Joystick port 2 and cursor keys | Unchanged |
-| 2nd | Joystick fire and symbol layer | Unchanged |
-| ALPHA | Printed letter layer on digit keys | Unchanged |
-| CLEAR | Quit emulator | Unchanged |
-
-The **Function keys** setting selects F1/3/5/7 or F2/4/6/8 for the four mapped
-top-row keys. Even function keys send the C64's Shift+function combination.
-Holding **2nd** still selects the symbol layer, so it suppresses function keys
-in either bank. C64 cursor directions that require Shift can also shift a
-simultaneously held function key; the indicator shows the effective function.
-
-The display uses the full 320x200 game area. The GRAPH menu's **Optimization**
-settings start with **Turbo CPU/RAM 1x** and **Frame skip Adaptive**. Turbo
-offers **1x**, **50x**, **100x**, **200x**, and **Adaptive**. Higher rates give
-the CPU more cycles per VIC raster line; Adaptive adjusts that multiplier to
-the completed-frame cadence. These modes change CPU/device timing ratios and
-can disrupt timing-sensitive games. They do not multiply the calculator's
-native speed or guarantee faster gameplay; use 1x for normal C64 timing.
-**2nd + WINDOW** toggles 1x/200x, and **2nd + ZOOM** toggles frame skipping.
-Automatic skipping omits at most two consecutive display frames while
-continuing emulation and collision evaluation.
-
-**Key indicators** defaults to on. The top black band labels the function keys
-and GRAPH; the bottom band labels 2nd, ALPHA, MODE, VARS, and CLEAR. Active keys
-are highlighted, and unavailable functions display `--` in the symbol layer.
-Settings last until the emulator exits; they are not written to an AppVar.
-
-Indicators repaint only changed 64x20 cells at the existing keypad polling
-cadence, not once per game frame. The 320x200 game rendering path is unchanged.
-The paused menu temporarily saves and restores a 224x88 rectangle (19,712 bytes),
-without using the second VRAM half that contains C64 RAM. Timer 1 is stopped
-while paused, so menu time is excluded from emulation and profile timing.
-The optional legacy FPS overlay is hidden while key indicators are enabled.
-Calculator FPS impact still needs a comparable CEmu or hardware measurement.
-
-See [tests/io/README.md](tests/io/README.md) for input and menu regression tests.
+Use 1x for normal compatibility testing. Higher multipliers change CPU/device timing ratios and can disturb timing-sensitive games. They do not add calculator clock speed or guarantee improved gameplay.
 
 ## Build
 
 1. Install the CE toolchain and required C libraries.
 2. Ensure Python 3 is available.
 3. Open a CEdev shell in the project directory.
-4. Run the build or asset packaging target you need.
-5. Build the emulator with:
+4. Build the emulator with:
 
 ```bash
 make
 ```
 
-This produces the final emulator output in the `bin` directory and prepares any required AppVars for calculator execution.
+This produces the release image in `bin/EMUDORE.8xp` and prepares any AppVars needed for calculator execution.
 
-If TI-OS reports `ERROR: MEMORY` before the emulator appears, see
-[startup memory limits and checks](docs/startup-memory.md). The build limits
-the expanded program size, not only the compressed file transferred to the
-calculator. Without C64 ROM packages, a successful launch should display
-`ROM AppVars missing!` instead.
+The build is intentionally tuned for the CE toolchain and current runtime constraints. The project currently keeps `-fno-omit-frame-pointer` and uses `-Oz` in the hot compile paths and package-management code. A memory-limit issue can still arise if the target image or library usage exceeds the available program area, so see [docs/startup-memory.md](docs/startup-memory.md) for the linker and startup constraints.
 
-## Graphics and Performance Testing
+## Asset packaging
 
-The current build uses nightly eZ80 `-O2` with `-fno-omit-frame-pointer` and
-frame pacing by default. CPU/VIC timing, IRQs, and sprite state advance every
-emulated frame, while display frames are sampled so expensive painting does
-not stall gameplay. Character rendering uses a boot-tested assembly kernel
-with a C fallback. Sprite-enabled lines finish before the next CPU raster
-slice can change their data. Background and sprites are composed in a small
-row buffer before reaching the LCD. This is not full-frame double buffering
-or a claim of full-speed PAL on the calculator; verify actual throughput using
-the profiling build.
+The Makefile contains the current packaging targets for ROM, cartridge, and disk media. The active workflows are:
 
-```sh
+```bash
+make roms
+make cart CART="path/to/cart.bin"
+make files
+make disk DISK="tests/FINALBLW.D64"
+```
+
+The generated AppVars are used by the emulator’s startup loader and browser. Disk packaging supports D64/T64 conversion into calculator-friendly AppVars for C64 file access and fastloader-style behavior within the current drive logic.
+
+## Performance and validation
+
+The current emulator includes a native eZ80 JIT path and a validation harness that checks cache behavior, re-entry paths, native CPU correctness, and Parallax-style startup scenarios. The project expects validated throughput to be checked in CEmu with the intended throttle and playback settings, not by unbounded host speed results.
+
+Use the project verification tasks when working on a change:
+
+```bash
+make -C tests/jit target-extensions-check
+make -C tests/jit target-reentry-check
+make -C tests/jit check startup-check cpu-check
+```
+
+The detailed performance and compatibility notes live in [docs/performance.md](docs/performance.md) and [docs/jit-performance-handoff.md](docs/jit-performance-handoff.md).
+
+## Profiling and diagnostics
+
+The project supports profile-oriented builds for diagnosing hot code and render cost. The current pattern is:
+
+```bash
 make
 make PROFILE=1
 ```
 
-The release is `bin/EMUDORE.8xp`. The separately built diagnostic version is
-`bin/profile/EMUDORE.8xp`; after leaving emulation it displays recent emulated
-and rendered FPS, frame times, the selected character renderer, and CPU/render
-shares of sampled time (including loading).
+The release image is `bin/EMUDORE.8xp`; the profiling build is in `bin/profile`. The profile binary reports sampled emulated/render FPS, frame timings, and the relevant hot-path details after emulation exits. The memory-limited startup path and compressed-image constraints are described in [docs/startup-memory.md](docs/startup-memory.md).
 
-See [the performance procedure](docs/performance.md) for reproducible
-comparisons, host regression tests, and interpretation of the sampled counters.
+## Notes
 
-## Build Profiles
-
-The Makefile includes four main asset-generation profiles. These are not general "debug" modes; they are packaging targets for different kinds of C64 content.
-
-### 1. `roms`
-
-This target packages the C64 ROM dumps into AppVars for use by the emulator.
-
-Typical command:
-
-```bash
-make roms
-```
-
-What it does:
-
-- Reads ROM files from `assets/roms/`
-- Converts them into calculator-friendly AppVars under `bin/rom/`
-- Commonly includes BASIC, KERNAL, and character ROM images
-
-This is the standard ROM asset preparation target.
-
-### 2. `cart`
-
-This target packages a cartridge image into a cartridge AppVar.
-
-Typical command:
-
-```bash
-make cart CART="path/to/cart.bin"
-```
-
-What it does:
-
-- Accepts a cartridge image via the `CART` variable
-- Produces a cartridge AppVar suitable for the emulator
-- Useful when loading C64 cartridge-based games or software
-
-This target is for cartridge media, not standard ROM dumps.
-
-### 3. `files`
-
-This target packages BASIC listings and PRG files into AppVars.
-
-Typical command:
-
-```bash
-make files
-```
-
-What it does:
-
-- Uses the files listed in the `FILES` variable
-- Converts them into AppVars for application loading
-- Works with files such as BASIC programs and `.prg` executables
-
-This is the profile for software stored as individual files instead of a full disk image.
-
-### 4. `disk`
-
-This target packages a disk image into AppVars.
-
-Typical command:
-
-```bash
-make disk DISK="tests/FINALBLW.D64"
-```
-
-What it does:
-
-- Reads a `.d64` disk image
-- Extracts the disk contents into AppVars
-- Useful for loading disk-based C64 software in the emulator
-
-This is the profile for floppy-disk media workflows.
+This repository is actively used as a CE-targeted emulator project rather than a generic documentation stub. The current build and test expectations are documented in the files above, and the README is intended as a quick-entry guide rather than a full historical essay.
 
 ## Normal and Calculator-Oriented Conversion
 
