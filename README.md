@@ -12,6 +12,7 @@ Learn more about the Commodore 64: [C64 Wiki](https://www.c64-wiki.com/)
 - Modular emulator structure for the core subsystems
 - Support for ROM dumps, cartridge media, BASIC programs, and disk images
 - C64 asset packaging utilities for calculator-friendly AppVars
+- Color startup browser with file information, launcher lists, and reversible hiding
 - Build system tailored to the CE toolchain and emulator runtime
 
 ## Controls
@@ -26,6 +27,61 @@ Because of that, the control scheme may differ slightly depending on the game be
 - A game may use a custom control scheme even if it runs on the same emulator core
 
 Use the game’s instructions or on-screen prompts when available. The emulator should be treated as a flexible C64-compatible environment, not a single hard-coded control profile for every title.
+
+### C64 Startup Browser
+
+When a disk package is installed, the startup browser shows a scrolling file
+list and a selected-file information pane. It reaches every packaged PRG,
+including files beyond the old selector's first eight entries. Small icons
+distinguish BASIC, marked launchers, and other PRGs. The interface uses the
+existing single visible framebuffer; it does not draw into C64 RAM or run
+inside the emulation loop.
+
+| Browser key | Action |
+| --- | --- |
+| UP / DOWN | Select an entry |
+| LEFT / RIGHT | Move one page |
+| Y= | Switch Launchers / All Files |
+| ALPHA | Mark or unmark the selected file as a launcher |
+| TRACE | Hide or unhide the selected file |
+| ENTER | Open the selected program, or BASIC without a disk |
+| CLEAR | Save changed browser preferences and quit |
+
+An unconfigured disk starts in **All Files** with no automatic classification.
+**Launchers** contains only files explicitly marked as launchers and not hidden.
+All Files always includes hidden files, so hiding is reversible. A hidden entry
+keeps its launcher assignment. BASIC is always reachable and cannot be hidden
+or marked. No disk retains the existing direct boot-to-BASIC behavior.
+
+Hiding affects this browser only: support files remain present for exact-name,
+wildcard, and supported fastloader requests from the C64. A `.OBJ` suffix does
+not establish whether a file is a launcher or a required dependency. No game
+files are removed, renamed, or rewritten, and TI-OS variable attributes are
+not changed by browser Hide.
+
+The information pane reports **C64 PRG**, user-assigned role, byte size including
+the two-byte PRG header, and the hexadecimal **load address**. That address is
+not necessarily an execution entry point. The browser does not guess a source
+language from filenames or file contents.
+
+**Locked** is read-only: it reports the original C64 DOS file delete-protection
+bit, not a launch restriction or physical disk write protection. New normal and
+optimized D64 conversions emit an optional `ECDINFO.8xv` beside the existing
+`ECDSKnn.8xv` chunks. Transfer that companion with its matching disk to display
+Yes/No. Old packages remain compatible without reconversion; missing, stale, or
+invalid information displays **Unknown**. Standalone PRG/BASIC conversions do
+not have an original disk lock attribute.
+
+Launcher membership, visibility, and the selected view are saved when changed,
+in a separate `ECBRSET` AppVar. It retains eight recently configured disk
+identities with two checksummed snapshots, rather than changing game data.
+Byte-different rebuilt or optimized disks get separate preferences. If a write
+fails, the browser reports it and still permits launching; an archive failure
+can leave a valid preferences copy in RAM. Two snapshots protect incomplete
+writes, not arbitrary power loss during TI-OS garbage collection.
+
+See [tests/browser/README.md](tests/browser/README.md) for host regression tests
+and the limits of mock-font screenshots versus actual CEmu/device verification.
 
 ### Calculator Keys and Settings
 
@@ -53,6 +109,17 @@ top-row keys. Even function keys send the C64's Shift+function combination.
 Holding **2nd** still selects the symbol layer, so it suppresses function keys
 in either bank. C64 cursor directions that require Shift can also shift a
 simultaneously held function key; the indicator shows the effective function.
+
+The display uses the full 320x200 game area. The GRAPH menu's **Optimization**
+settings start with **Turbo CPU/RAM 1x** and **Frame skip Adaptive**. Turbo
+offers **1x**, **50x**, **100x**, **200x**, and **Adaptive**. Higher rates give
+the CPU more cycles per VIC raster line; Adaptive adjusts that multiplier to
+the completed-frame cadence. These modes change CPU/device timing ratios and
+can disrupt timing-sensitive games. They do not multiply the calculator's
+native speed or guarantee faster gameplay; use 1x for normal C64 timing.
+**2nd + WINDOW** toggles 1x/200x, and **2nd + ZOOM** toggles frame skipping.
+Automatic skipping omits at most two consecutive display frames while
+continuing emulation and collision evaluation.
 
 **Key indicators** defaults to on. The top black band labels the function keys
 and GRAPH; the bottom band labels 2nd, ALPHA, MODE, VARS, and CLEAR. Active keys
@@ -83,15 +150,23 @@ make
 
 This produces the final emulator output in the `bin` directory and prepares any required AppVars for calculator execution.
 
+If TI-OS reports `ERROR: MEMORY` before the emulator appears, see
+[startup memory limits and checks](docs/startup-memory.md). The build limits
+the expanded program size, not only the compressed file transferred to the
+calculator. Without C64 ROM packages, a successful launch should display
+`ROM AppVars missing!` instead.
+
 ## Graphics and Performance Testing
 
-The current build uses nightly eZ80 `-O2` with `-fno-omit-frame-pointer` and renders
-every visible emulated frame by default. Character rendering uses a boot-tested
-assembly kernel with a C fallback. Sprite-enabled lines finish before the next
-CPU raster slice can change their data. Background and sprites are composed
-in a small row buffer before reaching the LCD. This is not full-frame double
-buffering or a claim of full-speed PAL on
-the calculator; verify actual throughput using the profiling build.
+The current build uses nightly eZ80 `-O2` with `-fno-omit-frame-pointer` and
+frame pacing by default. CPU/VIC timing, IRQs, and sprite state advance every
+emulated frame, while display frames are sampled so expensive painting does
+not stall gameplay. Character rendering uses a boot-tested assembly kernel
+with a C fallback. Sprite-enabled lines finish before the next CPU raster
+slice can change their data. Background and sprites are composed in a small
+row buffer before reaching the LCD. This is not full-frame double buffering
+or a claim of full-speed PAL on the calculator; verify actual throughput using
+the profiling build.
 
 ```sh
 make
@@ -184,8 +259,9 @@ This is the profile for floppy-disk media workflows.
 
 ## Normal and Calculator-Oriented Conversion
 
-The existing `roms`, `cart`, `files`, and `disk` targets remain unchanged and
-write to `bin/rom`. Separate `roms-optimized`, `cart-optimized`,
+The existing `roms`, `cart`, `files`, and `disk` commands retain their package
+formats and write to `bin/rom`. D64 conversion also emits optional browser file
+information. Separate `roms-optimized`, `cart-optimized`,
 `files-optimized`, and `disk-optimized` targets write to `bin/optimized`:
 
 ```sh
