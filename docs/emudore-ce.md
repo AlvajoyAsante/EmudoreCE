@@ -51,7 +51,7 @@ compiler build uses `-O2`. Treat historical FPS figures as historical results.
 - 2nd = LSHIFT(1,7) + shift_map for symbols (SPACE,./-+*@;=). ALPHA=RSHIFT(6,4).
 - MODE=Commodore(7,5), GRAPHVAR=Control(7,2), ENTER=RETURN(0,1), DEL=backspace(0,0). CLEAR=quit.
 
-## ROM packaging (done in tools/rom_to_appvar.py)
+## ROM packaging (done in tools/appvar_builder.py)
 - Rewritten for C64: --kind basic|kernal|chars. AppVar magic "EM64", names EC<id>NN
   (id=BAS/KRN/CHR). Sizes: basic/kernal 0x2000, chars 0x1000. LZSS compress kept,
   MSX BIOS-patch/mapper logic removed. CEPackage.c reads kind from header[5]=packageIndex.
@@ -62,9 +62,9 @@ compiler build uses `-O2`. Treat historical FPS figures as historical results.
 - Valid KERNAL: bmc64 repo third_party/vice-3.3/data/C64/kernal (MD5 39065497630802346bce17963f13c092,
   RESET=$FCE2). Saved as assets/roms/kernal.bin.
 - AppVar ids shortened to BAS/KRN/CHR (TI var name limit 8 = "EC"+id+2hex). Generated:
-  ECBAS00.8xv, ECKRN00.8xv, ECCHR00.8xv via tools/rom_to_appvar.py --kind basic|kernal|chars.
+  ECBAS00.8xv, ECKRN00.8xv, ECCHR00.8xv via tools/appvar_builder.py --kind basic|kernal|chars.
 
-- Cartridge packaging added via tools/rom_to_appvar.py --kind cart -> ECCRTnn AppVars; cart images are variable-size and validated like DSK packages.
+- Cartridge packaging added via tools/appvar_builder.py --kind cart -> ECCRTnn AppVars; cart images are variable-size and validated like DSK packages.
 
 - Startup menu added in src/main.c: shows ROM/file counts and lets you choose which DSK entry autoloads; drive loader treats selected wildcard load as that entry.
   Entry 0 = "BASIC (no disk)": show_file_menu returns 2 -> main zeroes fileCount so
@@ -101,8 +101,8 @@ compiler build uses `-O2`. Treat historical FPS figures as historical results.
   the spare VRAM tail.
 
 
-## Disk loading (D64 -> AppVar, done)
-- tools/d64_to_appvar.py packs all CLOSED PRG files from a .d64 into "DSK" package
+## Disk loading (D64/T64 -> AppVar, done)
+- tools/rom_to_appvar.py packs normal PRG files from a .d64 or .t64 into "DSK" package
   AppVars ECDSK00/01... (EM64 v2, kind index 3, UNCOMPRESSED on purpose: drive.c reads
   file bytes straight out of the archived AppVar via CEPackageChunkPtr; no RAM copy).
   Payload: u8 count, then 22-byte entries {name[16] PETSCII $A0-pad, u24 off, u24 size},

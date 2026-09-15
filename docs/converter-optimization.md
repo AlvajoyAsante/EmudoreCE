@@ -1,6 +1,7 @@
 # Calculator-Oriented Conversion
 
-There are two conversion paths. Normal conversion is unchanged. The separate
+There are two conversion paths. Normal game-data conversion is unchanged;
+D64 exports also include optional browser file information. The separate
 calculator-oriented converter accepts any input supported by the existing
 converters. Its built-in code optimization currently recognizes one verified
 MR.CROSS V2.0 bootstrap layout, including the selected FINAL BLOW disk. It is
@@ -22,7 +23,7 @@ Use `disk-optimized`, not `roms-optimized`, to optimize a game on disk. The disk
 target passes `--require-code-change`: if no compatible decoder or explicit
 profile matches, it fails before writing new AppVars. Existing output files
 are left in place on failure and must not be mistaken for a newly converted
-disk. The original D64 and the normal `disk` target remain unchanged.
+disk. The original D64 and normal DSK game payload remain unchanged.
 
 Normal targets write to `bin/rom`. The optimized targets default to
 `bin/optimized`, so normal output is not overwritten. Set `OPTIMIZED_OUTPUT`
@@ -53,12 +54,51 @@ Without `--require-code-change`, unchanged conversion is permitted but prints
 `NO CODE OPTIMIZATION APPLIED`. Archive-byte savings of zero do not imply zero
 execution savings: the built-in rewrite keeps the PRG size unchanged.
 
-AppVar names and the EM64 package format remain unchanged. Transfer either
+Game/ROM AppVar names and the EM64 package format remain unchanged. Transfer either
 the normal or optimized set for a package, not both: the calculator uses the
 same variable names. BASIC/KERNAL/character packages can coexist with one
 disk package. Use a separate output directory per game and transfer all of
 that package's chunks together. Emulator rebuilding is not required to use
 these packages.
+
+## Browser File Information
+
+Both normal and optimized D64 conversions also write `ECDINFO.8xv`, a small,
+standalone AppVar containing the original file-type/lock bytes in directory
+order. It is not a disk chunk or a new emulated file. Transfer it with the
+matching `ECDSKnn` set to display original C64 lock status in the startup
+browser. Existing DSK bytes and ordering are identical to conversion without
+this companion; old emulator versions can ignore it.
+
+The new browser treats missing, corrupt, wrong-version, or mismatched ECDINFO
+as optional unavailable information: **Locked: Unknown**. It still opens old
+packages without reconversion. Locked refers to the C64 DOS delete-protection
+bit (`0x40`), not physical disk write protection or permission to launch.
+Source `.OBJ` names receive no special treatment; all included closed PRGs
+retain their original flags, including duplicate names and shared blobs.
+
+Version 1 is explicitly little-endian:
+
+| Field | Bytes |
+| --- | ---: |
+| Magic `ECFI`, version 1, file count, two reserved zero bytes | 8 |
+| Final logical DSK payload length and IEEE CRC32 | 8 |
+| Original directory file-type byte per included PRG | count |
+| IEEE CRC32 of all preceding metadata bytes | 4 |
+
+The total is `20 + count` bytes, excluding the TI container. Identity covers
+the entire logical payload, including later chunks. The optimized identity is
+computed after code transformations and file deduplication, not from the source
+D64 or the pre-optimization payload. CRC32 is an accidental-mismatch check,
+not authentication. Two source disks differing only in attributes have the
+same game payload; transfer the correct companion for the desired source.
+
+D64 optimization reports include `source_file_type` per directory entry and
+list the companion among output AppVars. Standalone PRG/BASIC and firmware
+conversions stay unchanged. Dry-run, invalid profiles, strict no-code-change
+refusals, and output/input collisions write no new metadata. Existing outputs
+are not deleted on failure. Browser preferences use a separate calculator-side
+`ECBRSET` AppVar and are never embedded in either conversion output.
 
 ## Automatic Behavior
 
