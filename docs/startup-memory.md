@@ -1,16 +1,20 @@
 # Startup Memory
 
+This page documents the current startup and program-area limits for the shipping
+EMUDORE CE build. It is a production-relevant note for the calculator runtime,
+not a historical essay about earlier oversized prototypes.
+
 TI-OS `ERROR: MEMORY` before the emulator screen is different from a missing
 C64 ROM. The compressed program must expand in calculator RAM, and LibLoad
 then appends relocatable CE library code. Archive file size alone does not
 describe this requirement. Missing C64 ROM packages should instead display
 `ROM AppVars missing!` after the program starts.
 
-The oversized JIT build occupied 141,258 bytes before its ZX7 loader and
-libraries were included. With the standard v15.0 libraries, the combined
-154,138-byte requirement exceeded even the 153,473-byte program-area ceiling
-between `LOAD_ADDR=0xD1A87F` and the framebuffer at `0xD40000`. Removing disk
-or ROM AppVars could not make that build fit on an otherwise empty calculator.
+The current release still stays within the tested CE program-area limits by
+keeping the image archived, preserving the linker constraints in the SDK, and
+avoiding unnecessary BSS/VRAM allocations. The relevant verification path is the
+startup-memory test in `tests/jit`, which checks the real compressed image,
+its ELF parity, and the missing-ROM boot path under the current build rules.
 
 ## Build Limits
 

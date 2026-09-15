@@ -1,5 +1,9 @@
 # Graphics and performance validation
 
+This document describes the active CE build, its rendering model, and the validation workflow used to assess emulator throughput, compatibility, and regressions. It is meant to reflect the current project status rather than a historical timeline of earlier experiments.
+
+The current release is the TI-84+ CE emulator with the active JIT, browser, ROM/disk packaging, and startup-memory constraints described elsewhere in the project. The measurements here should be interpreted as compatibility and performance evidence for the current build, not as a generic statement about all possible C64 workloads or older branches.
+
 ## Current behavior
 
 - All eight sprite X registers are independent, including sprite 5 at `$D00A`.
