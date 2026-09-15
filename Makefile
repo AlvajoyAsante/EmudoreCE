@@ -71,7 +71,7 @@ cart:
 	python tools/appvar_builder.py "$(CART)" --kind cart --output bin/rom
 
 # Package BASIC listings / PRGs into ECDSKnn AppVars.
-FILES ?= emudore/assets/bas/10print.bas emudore/assets/bas/lowercase.bas emudore/assets/bas/bouncing.bas emudore/assets/prg/monopole.prg
+FILES ?=
 .PHONY: files
 files:
 	python tools/files_to_dsk_appvar.py $(FILES) --output bin/rom
