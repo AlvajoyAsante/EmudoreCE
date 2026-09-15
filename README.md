@@ -1,6 +1,6 @@
-# <img src="icon.png" alt="AMUDORE CE icon" width="128" height="128" />
-# AMUDORE CE
-
+<img src="icon.png" alt="EMUDORE CE icon" width="128" height="128" />` 
+# Emudore CE
+    
 Emudore CE is a Commodore 64 emulator for the TI-84 Plus CE, built around a portable C core with CE-specific I/O, ROM packaging, and a native JIT path for the eZ80 target. The project aims to preserve the behavior of classic C64 software while staying within TI-OS memory and runtime constraints.
 
 The emulator currently includes:
@@ -13,6 +13,13 @@ The emulator currently includes:
 - Release and profiling builds that are validated in CEmu and host-side regression tests
 
 Learn more about the original system: [C64 Wiki](https://www.c64-wiki.com/)
+
+## Screenshots
+
+|  |  |  |
+| --- | --- | --- |
+| ![Demo 1](docs/screenshots/demo%201.png) <br> Demo 1 | ![Demo 2](docs/screenshots/demo%202.png) <br> Demo 2 | ![Demo 3](docs/screenshots/demo%203.png) <br> Demo 3 |
+| ![Parallax](docs/screenshots/paralax.png) <br> Parallax | ![Pac-Man](docs/screenshots/packman.png) <br> Pac-Man |  |
 
 ## Current status
 
@@ -35,12 +42,7 @@ The most relevant project docs are:
 - Performance profiles for release, CPU-hot diagnostics, and frame-skip control
 - Host and CEmu regression tests covering browser, I/O, VIC, drive, and JIT behavior
 
-## Screenshots
 
-|  |  |  |
-| --- | --- | --- |
-| ![Demo 1](docs/screenshots/demo%201.png) <br> Demo 1 | ![Demo 2](docs/screenshots/demo%202.png) <br> Demo 2 | ![Demo 3](docs/screenshots/demo%203.png) <br> Demo 3 |
-| ![Parallax](docs/screenshots/paralax.png) <br> Parallax | ![Pac-Man](docs/screenshots/packman.png) <br> Pac-Man |  |
 
 ## Controls and settings
 
