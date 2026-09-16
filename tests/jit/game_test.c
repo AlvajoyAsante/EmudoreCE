@@ -2,6 +2,9 @@
 #include "target_test.c"
 #undef main
 #include "keypad.h"
+#ifdef GAME_JIT_WATCH
+#include "debug/debug.h"
+#endif
 
 #define GAME_DISK_FLASH 0x100000u
 
@@ -723,6 +726,102 @@ static void game_dump_jit_guards(unsigned int frame)
     }
 }
 
+static void game_dump_page_table(const char *stage)
+{
+    uint32_t reads = symbol_address("_mem_rd_pg");
+    uint32_t writes = symbol_address("_mem_wr_pg");
+    fprintf(stderr, "PAGE_TABLE %s a0_rd=%06lx a0_wr=%06lx af_rd=%06lx af_wr=%06lx\n", stage,
+            (unsigned long)mem_peek_long(reads + 0xa0 * 4),
+            (unsigned long)mem_peek_long(writes + 0xa0 * 4),
+            (unsigned long)mem_peek_long(reads + 0xaf * 4),
+            (unsigned long)mem_peek_long(writes + 0xaf * 4));
+}
+
+static void game_verify_jit_cache(void)
+{
+    enum { JIT_BLOCK_COUNT = 16, JIT_BLOCK_STRIDE = 586, JIT_CODE_SIZE = 4, JIT_READY = 5,
+           JIT_NATIVE_SIZE = 8, JIT_GUEST = 24, JIT_NATIVE = 72 };
+    JitTarget target = {
+        .state = state_address,
+        .low_ram = low_address,
+        .high_ram = high_address,
+        .read_byte = symbol_address("_jit_read_bridge"),
+        .write_byte = symbol_address("_jit_write_bridge"),
+        .decimal_adc = symbol_address("_cpu_decimal_adc"),
+        .decimal_sbc = symbol_address("_cpu_decimal_sbc"),
+        .brk = symbol_address("_cpu_brk_native")
+    };
+    uint32_t blocks_address = symbol_address("_jit_blocks");
+    unsigned int slot;
+
+    for (slot = 0; slot < JIT_BLOCK_COUNT; ++slot)
+    {
+        uint32_t block = blocks_address + slot * JIT_BLOCK_STRIDE;
+        uint8_t expected[512];
+        JitTranslation translation;
+        uint16_t actual_size, offset;
+        if (!mem_peek_byte(block + JIT_READY))
+            continue;
+        actual_size = mem_peek_byte(block + JIT_NATIVE_SIZE) |
+                      ((uint16_t)mem_peek_byte(block + JIT_NATIVE_SIZE + 1) << 8);
+        if (!jit_compile(expected, sizeof(expected), mem.ram.block + block + JIT_GUEST - RAM_BASE,
+                         mem_peek_byte(block + JIT_CODE_SIZE),
+                         mem_peek_byte(block) | ((uint16_t)mem_peek_byte(block + 1) << 8),
+                         &target, &translation))
+        {
+            fprintf(stderr, "JIT_NATIVE_REBUILD slot=%u failed\n", slot);
+            continue;
+        }
+        if (actual_size != translation.native_size)
+        {
+            fprintf(stderr, "JIT_NATIVE_SIZE slot=%u actual=%u expected=%u\n",
+                    slot, actual_size, translation.native_size);
+            continue;
+        }
+        for (offset = 0; offset < actual_size; ++offset)
+            if (mem_peek_byte(block + JIT_NATIVE + 1 + offset) != expected[offset])
+            {
+                fprintf(stderr, "JIT_NATIVE_DIFF slot=%u pc=%04x offset=%u actual=%02x expected=%02x\n",
+                        slot, mem_peek_byte(block) | (mem_peek_byte(block + 1) << 8), offset,
+                        mem_peek_byte(block + JIT_NATIVE + 1 + offset), expected[offset]);
+                break;
+            }
+    }
+}
+
+#ifdef GAME_JIT_WATCH
+static uint32_t game_jit_watch_address;
+static unsigned int game_jit_watch_sequence;
+
+static void game_watch_10k_cache(void)
+{
+    enum { JIT_BLOCK_STRIDE = 586, JIT_NATIVE = 72 };
+    uint32_t blocks_address = symbol_address("_jit_blocks");
+
+    if (!game_jit_watch_address)
+    {
+        game_jit_watch_address = blocks_address + JIT_NATIVE + 1 + 19;
+        target_debug_page_entry = symbol_address("_mem_wr_pg") + 0xaf * 4;
+        debug_watch(game_jit_watch_address, DBG_MASK_WRITE, true);
+        printf("JIT_NATIVE_WATCH armed=%06lx slot=0 offset=19\n",
+               (unsigned long)game_jit_watch_address);
+    }
+    if (target_debug_sequence != game_jit_watch_sequence)
+    {
+        if (target_debug_a == 0xc2)
+            fprintf(stderr, "JIT_NATIVE_WATCH sequence=%u reason=%u address=%06lx target_pc=%06lx sp=%06lx ix=%06lx iy=%06lx hl=%06lx de=%06lx bc=%06lx af_wr=%06lx guest_pc=%04lx value=%02x\n",
+                target_debug_sequence, target_debug_reason, (unsigned long)target_debug_data,
+                (unsigned long)target_debug_pc, (unsigned long)target_debug_sp,
+                (unsigned long)target_debug_ix, (unsigned long)target_debug_iy,
+                (unsigned long)target_debug_hl, (unsigned long)target_debug_de,
+                (unsigned long)target_debug_bc, (unsigned long)target_debug_page_value,
+                (unsigned long)(mem_peek_long(state_address) & 0xffff),
+                mem_peek_byte(game_jit_watch_address));
+        game_jit_watch_sequence = target_debug_sequence;
+    }
+}
+#endif
+
 static uint32_t game_query(const char *name, uint32_t argument, bool byte_result)
 {
     uint8_t saved_registers[sizeof(cpu.registers)];
@@ -806,6 +905,9 @@ static void game_run(unsigned int limit)
     if (!boundary) boundary = symbol_address("_io_screen_refresh");
     boundary_opcode = mem_peek_byte(boundary);
     mem_poke_byte(boundary, 0x76);
+#ifdef GAME_JIT_WATCH
+    game_watch_10k_cache();
+#endif
     printf("RUN jit=%s frames=%u boundary=%06lx counted=%s TI-OS=none HUD-text=stubbed\n",
            game_jit_enabled ? "on" : "off", limit, (unsigned long)boundary,
            before_count ? "completed-render-before-counter" : "counter-incremented");
@@ -826,10 +928,15 @@ static void game_run(unsigned int limit)
     while (frame < limit)
     {
         cemu_throttle_run(1);
+#ifdef GAME_JIT_WATCH
+        game_watch_10k_cache();
+#endif
         if (cpu.halted && game_handle_hook()) continue;
         if ((cpu.registers.PC < RAM_BASE || cpu.registers.PC >= 0xd40000) && !game_at_hook_entry())
         {
             game_escape_trace();
+            game_dump_page_table("escape");
+            game_verify_jit_cache();
             game_dump_jit_cache();
             game_bitmap(frame);
             fail("execution left linked application/native RAM");
@@ -936,6 +1043,7 @@ static void game_run(unsigned int limit)
             if (mismatches != previous_mismatches)
             {
                 game_dump_jit_guards(frame);
+                game_verify_jit_cache();
                 previous_mismatches = mismatches;
             }
             if (frame == 1 || frame % 60 == 0 || frame == limit) game_bitmap(frame);
@@ -1020,6 +1128,9 @@ int main(int argc, char **argv)
     game_parse_input();
     setvbuf(stdout, NULL, _IONBF, 0);
     asic_init();
+#ifdef GAME_JIT_WATCH
+    debug_init();
+#endif
     mem.flash.size = SIZE_FLASH_MIN;
     mem.flash.block = malloc(mem.flash.size);
     if (!mem.flash.block) fail("game flash fixture allocation");
@@ -1073,6 +1184,7 @@ int main(int argc, char **argv)
     state_address = symbol_address("_cpu");
     low_address = mem_peek_long(symbol_address("_mem_low"));
     high_address = mem_peek_long(symbol_address("_mem_ram"));
+    game_dump_page_table("startup");
         if (!game_resumed)
         {
             printf("STARTUP pc=%04lx drive_files=%u backend=%u low=%06lx high=%06lx port=%02x\n",

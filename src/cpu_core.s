@@ -153,7 +153,6 @@ write_de:
     ld (hl), a
     ld hl, 0
     ld l, d
-    add hl, hl
     ld bc, _jit_page_generation
     add hl, bc
     inc (hl)

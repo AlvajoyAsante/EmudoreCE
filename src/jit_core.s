@@ -264,7 +264,6 @@ jit_fast_mapping:
     jp nz, jit_fast_pointer
     ld hl, 0
     ld l, (iy + 1)
-    add hl, hl
     ld de, _jit_page_generation
     add hl, de
     ld a, (hl)
@@ -274,7 +273,6 @@ jit_fast_mapping:
     add a, (iy + 4)
     dec a
     jp nc, jit_fast_execute
-    inc hl
     inc hl
     ld a, (hl)
     cp a, (iy + 3)
@@ -306,7 +304,6 @@ jit_fast_byte:
     djnz jit_fast_byte
     ld hl, 0
     ld l, (iy + 1)
-    add hl, hl
     ld de, _jit_page_generation
     add hl, de
     ld a, (hl)
@@ -315,7 +312,6 @@ jit_fast_byte:
     add a, (iy + 4)
     dec a
     jr nc, jit_fast_snapshot_last
-    inc hl
     inc hl
 jit_fast_snapshot_last:
     ld a, (hl)

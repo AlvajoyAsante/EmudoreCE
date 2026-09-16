@@ -8,6 +8,9 @@
 #include "schedule.h"
 #include "vrEmu6502.h"
 #include "cemu_throttle.h"
+#ifdef GAME_JIT_WATCH
+#include "debug/debug.h"
+#endif
 #include "../../src/jit_emit.h"
 
 #define RAM_BASE 0xd00000UL
@@ -48,6 +51,11 @@ static uint16_t expected_native_size;
 static uint64_t last_call_cycles;
 static uint32_t last_native_address;
 static bool inject_native_fault;
+unsigned int target_debug_reason, target_debug_sequence;
+uint32_t target_debug_data, target_debug_pc, target_debug_sp, target_debug_ix;
+uint32_t target_debug_hl, target_debug_de, target_debug_bc, target_debug_iy;
+uint32_t target_debug_page_entry, target_debug_page_value;
+uint8_t target_debug_a;
 
 static uint8_t reference_read(uint16_t address, bool debug)
 {
@@ -63,6 +71,26 @@ static void reference_write(uint16_t address, uint8_t value)
 void gui_console_clear(void) {}
 void gui_console_printf(const char *format, ...) { (void)format; }
 void gui_console_err_printf(const char *format, ...) { (void)format; }
+void gui_debug_close(void) {}
+void gui_debug_open(int reason, uint32_t data)
+{
+    target_debug_reason = (unsigned int)reason;
+    ++target_debug_sequence;
+    target_debug_data = data;
+    target_debug_pc = cpu.registers.PC;
+    target_debug_sp = cpu.registers.SPL;
+    target_debug_ix = cpu.registers.IX;
+    target_debug_iy = cpu.registers.IY;
+    target_debug_hl = cpu.registers.HL;
+    target_debug_de = cpu.registers.DE;
+    target_debug_bc = cpu.registers.BC;
+#ifdef GAME_JIT_WATCH
+    target_debug_a = debug_last_write_value;
+#else
+    target_debug_a = cpu.registers.A;
+#endif
+    target_debug_page_value = target_debug_page_entry ? mem_peek_long(target_debug_page_entry) : 0;
+}
 asic_rev_t gui_handle_reset(const boot_ver_t *version, asic_rev_t loaded,
                            asic_rev_t suggested, emu_device_t device, bool *python)
 {
@@ -1127,6 +1155,48 @@ static void test_assembly_jit_reentry(void)
     puts("PASS assembly JIT re-entry across backward branch and every batch budget 1..64");
 }
 
+static void test_high_page_generation_index(void)
+{
+    static const uint8_t cached_program[] = {0x88,0xca,0xd0,0xfd};
+    static const uint8_t write_program[] = {0xa9,0xc2,0x8d,0x36,0xaf,0x02};
+    JitTarget target = {
+        .state = state_address,
+        .low_ram = low_address,
+        .high_ram = high_address,
+        .read_byte = symbol_address("_jit_read_bridge"),
+        .write_byte = symbol_address("_jit_write_bridge"),
+        .decimal_adc = symbol_address("_cpu_decimal_adc"),
+        .decimal_sbc = symbol_address("_cpu_decimal_sbc"),
+        .brk = symbol_address("_cpu_brk_native")
+    };
+    uint8_t expected[512];
+    JitTranslation translation;
+    uint32_t native = symbol_address("_jit_blocks") + 72 + 1;
+    uint32_t generations = symbol_address("_jit_page_generation");
+    uint16_t offset;
+
+    target_call("_mem_setup_banks", 7);
+    target_call("_jit_reset", 0);
+    seed_guest(cached_program, sizeof(cached_program), 0x01a5, 0, 0);
+    if (!jit_compile(expected, sizeof(expected), cached_program, sizeof(cached_program),
+                     0x01a5, &target, &translation))
+        fail("high-page generation fixture did not compile");
+    make_hot(0x01a5);
+    for (offset = 0; offset < translation.native_size; ++offset)
+        if (mem_peek_byte(native + offset) != expected[offset])
+            fail("target high-page generation fixture differs before its store");
+    seed_guest(write_program, sizeof(write_program), 0x0400, 0, 0);
+    mem_poke_byte(symbol_address("_cpu_jit_reentry"), 0);
+    if (!target_call("_cpu_run_asm", 6))
+        fail("assembly high-page store did not complete");
+    if (mem_peek_byte(high_address + 0xaf36) != 0xc2 || mem_peek_byte(generations + 0xaf) != 1)
+        fail("assembly high-page store did not update its RAM or page generation");
+    for (offset = 0; offset < translation.native_size; ++offset)
+        if (mem_peek_byte(native + offset) != expected[offset])
+            fail("high-page generation update corrupted native JIT code");
+    puts("PASS high-page assembly invalidation preserves JIT native cache");
+}
+
 static void test_indexed_copy_batches(void)
 {
     static const uint16_t regions[][2] = {
@@ -1886,8 +1956,11 @@ int main(int argc, char **argv)
         test_failure_fallback();
         test_native_self_modification();
         test_assembly_jit_reentry();
+        test_high_page_generation_index();
         test_native_decimal(argc > 2 && !strcmp(argv[2], "--decimal-exhaustive"));
     }
+    if (edge_only)
+        test_high_page_generation_index();
     if (edge_only || reentry_only)
         test_assembly_jit_reentry();
     if (!extensions_only && !cpu_only && !edge_only && !benchmark_only && !reentry_only)
