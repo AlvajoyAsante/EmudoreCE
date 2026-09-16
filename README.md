@@ -1,4 +1,4 @@
-<img src="docs/amudore-ce-icon.png" alt="Emudore CE icon" width="64" height="64" />
+<img src="docs/emudore-ce-icon.png" alt="Emudore CE icon" width="50%"  />
 
 # Emudore CE
 
@@ -17,10 +17,9 @@ Learn more about the original system: [C64 Wiki](https://www.c64-wiki.com/)
 
 ## Screenshots
 
-|  |  |  |
+| <div align="center"><img src="docs/screenshots/demo%201.png" alt="Demo 1" width="220" /><br>Demo 1</div> | <div align="center"><img src="docs/screenshots/demo%202.png" alt="Demo 2" width="220" /><br>Demo 2</div> | <div align="center"><img src="docs/screenshots/demo%203.png" alt="Demo 3" width="220" /><br>Demo 3</div> |
 | --- | --- | --- |
-| ![Demo 1](docs/screenshots/demo%201.png) <br> Demo 1 | ![Demo 2](docs/screenshots/demo%202.png) <br> Demo 2 | ![Demo 3](docs/screenshots/demo%203.png) <br> Demo 3 |
-| ![Parallax](docs/screenshots/paralax.png) <br> Parallax | ![Pac-Man](docs/screenshots/packman.png) <br> Pac-Man |  |
+| <div align="center"><img src="docs/screenshots/paralax.png" alt="Parallax" width="220" /><br><strong>Parallax</strong></div> | <div align="center"><img src="docs/screenshots/packman.png" alt="Pac-Man" width="220" /><br><strong>Pac-Man</strong></div> |  |
 
 ## Current status
 
