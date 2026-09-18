@@ -112,6 +112,20 @@ bool jit_execute(const uint8_t *code)
     return false;
 }
 
+/* Host stand-in for the assembly block dispatcher: run the block's guest
+   instructions through the reference stepper so CPU state, cycle budget
+   and native_calls match the on-target dispatch path. */
+bool jit_execute_block(const void *block)
+{
+    const JitBlock *entry = block;
+    uint8_t step;
+    ++native_calls;
+    for (step = 0; step < entry->translation.instructions; ++step)
+        if (!cpu_step_slow())
+            return false;
+    return true;
+}
+
 static void reset_fixture(void)
 {
     unsigned int page;

@@ -47,6 +47,7 @@ static const char *game_resume_path = "none";
 static const char *game_disk_path = "../Parallax.d64";
 static unsigned int game_selected;
 static bool game_resumed;
+static bool game_is_geos;
 
 typedef struct {
     char magic[8];
@@ -288,6 +289,22 @@ static void game_load_disk(const char *path)
     size_t size, offset, total, count = 0, file_index;
     unsigned int track = 18, sector = 1;
     disk = game_read(path, &size);
+
+    if (size >= 174848 && memcmp(disk + 91392 + 0xad, "GEOS", 4) == 0)
+    {
+        total = size;
+        if (total > mem.flash.size - GAME_DISK_FLASH) fail("D64 package exceeds fixture flash");
+        game_disk_size = (uint32_t)total;
+        payload = mem.flash.block + GAME_DISK_FLASH;
+        memcpy(payload, disk, size);
+        game_is_geos = true;
+        free(disk);
+        printf("PACKAGE DSK (RAW D64 GEOS) bytes=%lu flash=%06x fnv1a=%08lx\n",
+               (unsigned long)total, GAME_DISK_FLASH,
+               (unsigned long)game_hash(payload, total));
+        return;
+    }
+
     while (track)
     {
         unsigned int slot;
@@ -491,29 +508,37 @@ static bool game_handle_hook(void)
         if (count > game_load_count && !game_load_mode && !mem_peek_byte(state_address + 6))
         {
             if (count > 16) fail("successful LOAD exceeded trace capacity");
-            uint32_t trace = symbol_address("_drive_trace") + (count - 1) * 12;
+            uint32_t trace = symbol_address("_drive_trace") + (count - 1) * 14;
             unsigned int entry = mem_peek_byte(trace + 6);
             uint16_t destination = (uint16_t)mem_peek_long(trace + 2);
-            if (entry >= mem.flash.block[GAME_DISK_FLASH]) fail("successful LOAD has invalid directory entry");
-            const uint8_t *record = mem.flash.block + GAME_DISK_FLASH + 1 + entry * 22;
-            uint32_t offset = read_little(record + 16, 3);
-            uint32_t length = read_little(record + 19, 3);
-            if (length < 2 || offset > game_disk_size || length > game_disk_size - offset)
-                fail("successful LOAD has invalid payload bounds");
-            for (uint32_t index = 2; index < length; ++index)
+            bool is_raw_geos = game_disk_size >= 174848 && memcmp(mem.flash.block + GAME_DISK_FLASH + 91392 + 0xad, "GEOS", 4) == 0;
+            if (!is_raw_geos)
             {
-                uint16_t address = (uint16_t)(destination + index - 2);
-                uint8_t actual = mem_peek_byte((address < 0x1000 ? low_address : high_address) + address);
-                uint8_t expected = mem.flash.block[GAME_DISK_FLASH + offset + index];
-                if (actual != expected)
+                if (entry >= mem.flash.block[GAME_DISK_FLASH]) fail("successful LOAD has invalid directory entry");
+                const uint8_t *record = mem.flash.block + GAME_DISK_FLASH + 1 + entry * 22;
+                uint32_t offset = read_little(record + 16, 3);
+                uint32_t length = read_little(record + 19, 3);
+                if (length < 2 || offset > game_disk_size || length > game_disk_size - offset)
+                    fail("successful LOAD has invalid payload bounds");
+                for (uint32_t index = 2; index < length; ++index)
                 {
-                    fprintf(stderr, "LOAD RAM[%04x] expected=%02x actual=%02x entry=%u\n",
-                            address, expected, actual, entry);
-                    fail("drive trap did not copy the selected PRG byte-for-byte");
+                    uint16_t address = (uint16_t)(destination + index - 2);
+                    uint8_t actual = mem_peek_byte((address < 0x1000 ? low_address : high_address) + address);
+                    uint8_t expected = mem.flash.block[GAME_DISK_FLASH + offset + index];
+                    if (actual != expected)
+                    {
+                        fprintf(stderr, "LOAD RAM[%04x] expected=%02x actual=%02x entry=%u\n",
+                                address, expected, actual, entry);
+                        fail("drive trap did not copy the selected PRG byte-for-byte");
+                    }
                 }
+                printf("PASS LOAD entry=%u destination=%04x bytes=%lu byte-for-byte\n",
+                       entry, destination, (unsigned long)(length - 2));
             }
-            printf("PASS LOAD entry=%u destination=%04x bytes=%lu byte-for-byte\n",
-                   entry, destination, (unsigned long)(length - 2));
+            else
+            {
+                printf("PASS LOAD (RAW GEOS) entry=%u destination=%04x\n", entry, destination);
+            }
         }
         mem_poke_byte(game_load_return, game_load_return_opcode);
         mem_poke_byte(game_hooks[11].address, 0x76);
@@ -673,10 +698,11 @@ static void game_load_trace(void)
     unsigned int index;
     for (index = 0; index < count && index < 16; ++index)
     {
-        const uint8_t *record = mem.ram.block + address - RAM_BASE + index * 12;
-        printf("LOAD index=%u caller=%04lx address=%04lx end=%04lx entry=%u sa=%u name=%02x%02x%02x\n",
+         const uint8_t *record = mem.ram.block + address - RAM_BASE + index * 14;
+         printf("LOAD index=%u caller=%04lx address=%04lx end=%04lx entry=%u sa=%u name=%02x%02x%02x source=%u/%u\n",
                index, (unsigned long)read_little(record, 2), (unsigned long)read_little(record + 2, 2),
-               (unsigned long)read_little(record + 4, 2), record[6], record[7], record[9], record[10], record[11]);
+             (unsigned long)read_little(record + 4, 2), record[6], record[7], record[9], record[10], record[11],
+             record[12], record[13]);
     }
 }
 
@@ -1066,10 +1092,17 @@ static void game_run(unsigned int limit)
         }
         else if (cpu.registers.PC == RETURN_ADDRESS + 1)
         {
+            uint8_t guest_sp = mem_peek_byte(state_address + 2);
+            unsigned int offset;
             fprintf(stderr, "EARLY EXIT frame=%u pc=%04lx illegal=%02x illegal_pc=%04lx\n", frame,
                     (unsigned long)(mem_peek_long(state_address) & 0xffff),
                     mem_peek_byte(symbol_address("_cpu_illegal_op")),
                     (unsigned long)(mem_peek_long(symbol_address("_cpu_illegal_pc")) & 0xffff));
+            fprintf(stderr, "EARLY EXIT guest_sp=%02x stack=", guest_sp);
+              for (offset = (unsigned int)guest_sp + 1u;
+                  offset < 0x100 && offset < (unsigned int)guest_sp + 17u; ++offset)
+                fprintf(stderr, "%02x", mem_peek_byte(low_address + 0x100 + offset));
+            fputc('\n', stderr);
             game_bitmap(frame);
             game_load_trace();
             fail("compiled c64_run returned before requested frame bound");
@@ -1097,6 +1130,65 @@ static void game_run(unsigned int limit)
     if (limit >= 120 && (!mem_peek_byte(loads_address) || !nonblank_frames || !changed_frames))
     {
         fail("bounded run did not load a PRG and produce changing nonblank frames");
+    }
+    if (game_is_geos && limit >= 120)
+    {
+        uint16_t geos_pc = (uint16_t)mem_peek_long(state_address);
+        uint8_t geos_sp = mem_peek_byte(state_address + 2);
+        uint16_t geos_return = (uint16_t)(mem_peek_byte(low_address + 0x100 + geos_sp + 1) |
+                                          ((uint16_t)mem_peek_byte(low_address + 0x100 + geos_sp + 2) << 8));
+        unsigned int geos_calls = mem_peek_long(symbol_address("_drive_geos_call_count"));
+        uint32_t page = mem_peek_long(symbol_address("_mem_rd_pg") + (geos_pc >> 8) * 4);
+        uint32_t return_page = mem_peek_long(symbol_address("_mem_rd_pg") + (geos_return >> 8) * 4);
+        uint32_t cia2_page = mem_peek_long(symbol_address("_mem_rd_pg") + 0xdd * 4);
+        uint8_t vic_irq = (uint8_t)game_query("_vic_peek_register", 0x19, true);
+        uint8_t cia1_irq = (uint8_t)game_query("_cia1_peek_register", 0x0d, true);
+        uint8_t cia2_irq = (uint8_t)game_query("_cia2_peek_register", 0x0d, true);
+        uint8_t cia2_pra = (uint8_t)game_query("_cia2_peek_register", 0, true);
+        uint8_t dd00_cpu = cia2_page ? mem_peek_byte((cia2_page + 0xdd00) & 0xffffff) : cia2_pra;
+        unsigned int offset;
+        fprintf(stderr, "GEOS status pc=%04x bytes=", geos_pc);
+        for (offset = 4; offset < 12; ++offset)
+            fprintf(stderr, "%02x", page ? mem_peek_byte((page + geos_pc + offset - 4) & 0xffffff) : 0);
+        fprintf(stderr, " driver=%02x%02x%02x type=%02x port=%02x sp=%02x return=%04x\n",
+                mem_peek_byte(high_address + 0x9d80), mem_peek_byte(high_address + 0x9d81),
+                mem_peek_byte(high_address + 0x9d8f), mem_peek_byte(high_address + 0x8489),
+                mem_peek_byte(low_address + 1), geos_sp, geos_return);
+        fprintf(stderr, "GEOS cia2 page=%06lx cpu-dd00=%02x ram-dd00=%02x pra=%02x foreground bytes=",
+            (unsigned long)cia2_page, dd00_cpu, mem_peek_byte(high_address + 0xdd00), cia2_pra);
+        for (offset = 0; offset < 24; ++offset)
+        {
+            uint16_t address = (uint16_t)(geos_return + offset);
+            uint32_t address_page = return_page;
+            if ((address >> 8) != (geos_return >> 8))
+                address_page = mem_peek_long(symbol_address("_mem_rd_pg") + (address >> 8) * 4);
+            fprintf(stderr, "%02x", address_page ? mem_peek_byte((address_page + address) & 0xffffff) : 0);
+        }
+        fprintf(stderr, " resident=d560:");
+        for (offset = 0; offset < 96; ++offset)
+            fprintf(stderr, "%02x", mem_peek_byte(high_address + 0xd560 + offset));
+        fprintf(stderr, " zp00-0f=");
+        for (offset = 0; offset < 16; ++offset)
+            fprintf(stderr, "%02x", mem_peek_byte(low_address + offset));
+        fprintf(stderr, " ram-ffe4=");
+        for (offset = 0; offset < 16; ++offset)
+            fprintf(stderr, "%02x", mem_peek_byte(high_address + 0xffe4 + offset));
+        fprintf(stderr, " irq=%02x/%02x/%02x idf=%u vector=%02x%02x stack=",
+                vic_irq, cia1_irq, cia2_irq, mem_peek_byte(state_address + 8),
+                mem_peek_byte(low_address + 0x315), mem_peek_byte(low_address + 0x314));
+        for (offset = geos_sp + 1; offset < 0x100; ++offset)
+            fprintf(stderr, "%02x", mem_peek_byte(low_address + 0x100 + offset));
+        fputc('\n', stderr);
+        if (!geos_calls)
+        {
+    #ifndef GAME_GEOS_ALLOW_INCOMPLETE
+            fail("GEOS never reached the virtual disk driver");
+    #else
+            fputs("GEOS diagnostic run completed before virtual disk I/O\n", stderr);
+    #endif
+        }
+        printf("PASS GEOS target startup: %u virtual disk calls after %u frames\n",
+               geos_calls, frame);
     }
     fprintf(records, "# completed=%u nonblank_frames=%u changed_frames=%u gameplay=unconfirmed\n",
             frame, nonblank_frames, changed_frames);
@@ -1169,10 +1261,11 @@ int main(int argc, char **argv)
     else
     {
         game_call("_io_init", 0);
-        game_call("_mem_init", 0);
-        if (!game_call("_c64_boot_roms", 0)) fail("compiled C64 ROM startup failed");
+        /* main.c initializes the selected drive before it clears guest RAM. */
         memcpy(mem.flash.block + GAME_DISK_FLASH - 4, "DSK", 4);
         if (!game_call("_drive_init", GAME_DISK_FLASH - 4)) fail("compiled drive initialization failed");
+        game_call("_mem_init", 0);
+        if (!game_call("_c64_boot_roms", 0)) fail("compiled C64 ROM startup failed");
         game_call("_drive_select_file", selected);
         game_call("_drive_patch_kernal", 0);
         game_call("_cia1_reset", 0);

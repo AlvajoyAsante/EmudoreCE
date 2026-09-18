@@ -620,6 +620,20 @@ static void expect_protected_memory(void)
     }
 }
 
+/* The full-screen viewer is not a HUD update: require an exact RAM image,
+   no graphx text over it, and no writes to guest memory, guards or palette. */
+static void expect_viewer_frame(void)
+{
+    CHECK(vram_view_active && mock.render_suppressed);
+    CHECK(memcmp(gfx_vram, vram_view_source, FRAME_BYTES) == 0);
+    CHECK(mock.draw_count == 0 && mock.pixels == 0);
+    CHECK(memcmp(guarded_vram, saved_vram, GUARD_BYTES) == 0);
+    CHECK(memcmp(gfx_vram + FRAME_BYTES,
+                 saved_vram + GUARD_BYTES + FRAME_BYTES,
+                 VRAM_BYTES - FRAME_BYTES + GUARD_BYTES) == 0);
+    CHECK(memcmp(guarded_palette, saved_palette, sizeof(saved_palette)) == 0);
+}
+
 static void expect_matrix(uint8_t first_row, uint8_t shift_row, uint8_t last_row)
 {
     int row;
@@ -699,8 +713,10 @@ static void test_first_poll_2nd(void)
     expect_cell(0, 220, "2nd", "FIRE", true);
     CHECK_MSG(draw_count(DRAW_TEXT) == 20,
               "initial HUD: expected 20 text calls, got %zu", draw_count(DRAW_TEXT));
-    for (column = 0; column < 4; ++column)
-        expect_cell(column, 0, labels[column], "--", false);
+    for (column = 0; column < 4; ++column) {
+        static const char *const actions[] = {"ALPHA", "TURBO", "SKIP", "VRAM"};
+        expect_cell(column, 0, labels[column], actions[column], false);
+    }
     expect_matrix(0xff, 0xff, 0xff);
     CHECK(io_joystick2() == 0xef);
     expect_protected_memory();
@@ -865,7 +881,8 @@ static void test_second_layer_functions(void)
     CHECK(poll_keys(NO_KEYS));
     clear_draw_trace();
     save_framebuffer();
-    CHECK(poll_keys(KEYS(kb_Key2nd, kb_KeyYequ, kb_KeyWindow, kb_KeyZoom, kb_KeyTrace)));
+    /* TRACE opens a full-screen view; exercise that separately below. */
+    CHECK(poll_keys(KEYS(kb_Key2nd, kb_KeyYequ, kb_KeyWindow, kb_KeyZoom)));
     expect_matrix(0xff, 0xff, 0xff);
     CHECK(io_joystick2() == 0xff);
     CHECK(draw_count(DRAW_TEXT) == 14);
@@ -873,8 +890,8 @@ static void test_second_layer_functions(void)
         expect_cell(column, 0, function_labels[column], second_labels[column], false);
     expect_shortcut_status(0, true);
     expect_shortcut_status(1, true);
-    expect_shortcut_status(2, true);
-    expect_shortcut_status(3, true);
+    expect_shortcut_status(2, false); /* SKIP toggled the default on -> off. */
+    expect_shortcut_status(3, false);
     expect_cell(0, 220, "2nd", "FIRE", true);
     expect_cell(4, 0, "GRAPH", "MENU", false);
     expect_protected_memory();
@@ -993,8 +1010,12 @@ static void test_hud_band_bounds(void)
     for (cursor = 0; cursor < ARRAY_COUNT(cursors); ++cursor) {
         for (mask = 0; mask < 256; ++mask) {
             clear_draw_trace();
+            save_framebuffer();
             CHECK(poll_keys(hud_combination(mask, cursors[cursor])));
-            expect_protected_memory();
+            if (vram_view_active)
+                expect_viewer_frame();
+            else
+                expect_protected_memory();
             ++combinations;
         }
     }
@@ -1025,11 +1046,23 @@ static void test_indicators_disabled(void)
         save_framebuffer();
         for (cursor = 0; cursor < ARRAY_COUNT(cursors); ++cursor) {
             for (mask = 0; mask < 256; ++mask) {
+                clear_draw_trace();
+                save_framebuffer();
                 CHECK(poll_keys(hud_combination(mask, cursors[cursor])));
-                expect_no_frame_writes();
+                /* Disabling indicators must not disable the RAM viewer. */
+                if (vram_view_active)
+                    expect_viewer_frame();
+                else
+                    expect_no_frame_writes();
                 ++combinations;
             }
         }
+        if (vram_view_active) {
+            CHECK(poll_keys(KEYS(kb_KeyGraph)));
+            CHECK(!vram_view_active && !mock.render_suppressed);
+        }
+        clear_draw_trace();
+        save_framebuffer();
         CHECK(poll_keys(KEYS(kb_KeyYequ)));
         expect_matrix(0xef, 0xff, 0xff);
         expect_no_frame_writes();
@@ -1255,12 +1288,19 @@ static void expect_menu_memory(void)
 
 static void expect_menu_selection(const uint8_t *selected, size_t count)
 {
-    size_t index, found = 0;
-    CHECK_MSG(draw_count(DRAW_RECT) == count,
-              "menu redraws: expected %zu, got %zu", count, draw_count(DRAW_RECT));
+    size_t index, found = 0, frames = 0;
+    /* Submenus have their own frames and selection geometry. */
     for (index = 0; index < mock.draw_count; ++index) {
         const DrawCall *call = &mock.draw[index];
-        if (call->kind != DRAW_FILL_RECT || call->color != 13)
+        if (call->kind == DRAW_RECT && call->left == MENU_LEFT &&
+            call->top == MENU_TOP)
+            ++frames;
+    }
+    CHECK_MSG(frames == count,
+              "menu redraws: expected %zu, got %zu", count, frames);
+    for (index = 0; index < mock.draw_count; ++index) {
+        const DrawCall *call = &mock.draw[index];
+        if (call->kind != DRAW_FILL_RECT || call->color != 13 || call->left != 56)
             continue;
         CHECK_MSG(found < count, "unexpected selection highlight %zu", found);
         if (found < count) {
@@ -1377,14 +1417,20 @@ static void choose_function_bank(bool even)
     queue_key(NO_KEYS);
     queue_tap(kb_KeyDown);
     queue_tap(kb_KeyDown);
+    queue_tap(kb_KeyEnter); /* Open Key Settings; releases the entry key. */
+    queue_tap(kb_KeyDown);  /* Function keys in the submenu. */
     queue_tap(even ? kb_KeyRight : kb_KeyLeft);
+    queue_tap(kb_KeyGraph); /* Back to the main menu. */
+    queue_key(NO_KEYS);    /* Release the parent's Enter latch. */
     queue_resume(kb_KeyGraph);
     CHECK(poll_keys(KEYS(kb_KeyGraph)));
     expect_menu_selection(selected, ARRAY_COUNT(selected));
     expect_menu_return(start, true);
+    CHECK(even_function_keys == even);
+    CHECK(draw_count(DRAW_RECT) == 7); /* Four parent, three submenu draws. */
     for (index = 0; index < mock.draw_count; ++index) {
         const DrawCall *call = &mock.draw[index];
-        if (call->kind == DRAW_TEXT && call->left == 196 && call->top == 128)
+        if (call->kind == DRAW_TEXT && call->left == 212 && call->top == 100)
             final_value = call;
     }
     CHECK(final_value != NULL);
@@ -1675,31 +1721,55 @@ static void test_menu_second_suppression(void)
 {
     unsigned int bank, combination, column;
     for (bank = 0; bank < 2; ++bank) {
-        menu_fixture();
-        choose_function_bank(bank != 0);
         for (combination = 0; combination < 5; ++combination) {
+            static const char *const actions[] = {"ALPHA", "TURBO", "SKIP", "VRAM"};
             KeySnapshot functions = combination < 4 ? KEYS(function_keys[combination]) :
                 KEYS(kb_KeyYequ, kb_KeyWindow, kb_KeyZoom, kb_KeyTrace);
             KeySnapshot suppressed = functions;
             uint8_t mask = combination < 4 ? function_masks[combination] : 0x78;
+            bool opens_viewer = combination >= 3;
             size_t renders;
+            /* Keep each chord independent of prior toggles/viewer state. */
+            menu_fixture();
+            choose_function_bank(bank != 0);
             suppressed.rows[1] |= (uint8_t)kb_Key2nd;
             clear_draw_trace();
             save_framebuffer();
             CHECK(poll_keys(suppressed));
             expect_matrix(0xff, 0xff, 0xff);
-            CHECK(io_joystick2() == 0xef);
-            CHECK(draw_count(DRAW_TEXT) == 12);
-            for (column = 0; column < 4; ++column)
-                expect_cell(column, 0, function_labels[column], "--", false);
-            expect_cell(0, 220, "2nd", "FIRE", true);
-            expect_protected_memory();
+            CHECK(io_joystick2() == 0xff); /* Host shortcuts must not fire. */
+            if (opens_viewer)
+                expect_viewer_frame();
+            else {
+                CHECK(draw_count(DRAW_TEXT) == (combination == 0 ? 14 : 12));
+                for (column = 0; column < 4; ++column)
+                    expect_cell(column, 0, function_labels[column], actions[column], false);
+                expect_cell(0, 220, "2nd", "FIRE", true);
+                expect_shortcut_status(0, combination == 0);
+                expect_shortcut_status(1, combination == 1);
+                expect_shortcut_status(2, combination != 2);
+                expect_protected_memory();
+            }
             renders = mock.render_requests;
             clear_draw_trace();
             save_framebuffer();
             CHECK(poll_keys(suppressed));
+            if (opens_viewer)
+                expect_viewer_frame(); /* Holding the entry chord must not exit. */
             expect_no_frame_writes();
             CHECK(mock.render_requests == renders);
+            if (opens_viewer) {
+                CHECK(poll_keys(NO_KEYS));
+                expect_viewer_frame();
+                CHECK(poll_keys(KEYS(kb_Key2nd, kb_KeyTrace)));
+                CHECK(!vram_view_active && !mock.render_suppressed);
+                CHECK(mock.render_requests == renders + 1);
+                expect_no_frame_writes();
+                expect_matrix(0xff, 0xff, 0xff);
+                CHECK(io_joystick2() == 0xff);
+            }
+            clear_draw_trace();
+            save_framebuffer();
             CHECK(poll_keys(functions));
             expect_matrix((uint8_t)~mask, bank ? 0x7f : 0xff, 0xff);
             CHECK(io_joystick2() == 0xff);
@@ -1780,23 +1850,36 @@ static void test_menu_held_functions_idle(void)
 static void expect_menu_layout(void)
 {
     static const char *const labels[] = {
-        "Settings", "PAUSED", "Resume", "Key indicators", "Function keys",
-        "Turbo CPU", "Exit game", "Step debugger", "[x]", "[ ]", "1x",
-        "F1/3/5/7", "F2/4/6/8"
+        "Settings", "PAUSED", "Resume", "Key indicators", "Key Settings",
+        "Optimization", "Exit game", "Debugging", "[x]", "[ ]",
+        "Clear action", "Function keys", "Fire button", "Back",
+        "Exit to Browser", "2ND", "F1/3/5/7", "F2/4/6/8"
     };
     bool seen[ARRAY_COUNT(labels)] = {false};
-    size_t index, frame_start = 0, menu_texts = 0;
+    size_t index, frame_start = 0, menu_texts = 0, expected_texts = 0;
+    int left = MENU_LEFT, top = MENU_TOP, width = MENU_WIDTH, height = MENU_HEIGHT;
     for (index = 0; index < mock.draw_count; ++index) {
         const DrawCall *call = &mock.draw[index];
+        /* A background fill starts each parent/submenu redraw. */
+        if (call->kind == DRAW_FILL_RECT && call->color == 0 &&
+            (call->width == MENU_WIDTH || call->width == 256)) {
+            bool submenu = call->width == 256;
+            left = submenu ? 32 : MENU_LEFT;
+            top = submenu ? 62 : MENU_TOP;
+            width = submenu ? 256 : MENU_WIDTH;
+            height = submenu ? 96 : MENU_HEIGHT;
+            CHECK(call->left == left && call->top == top && call->height == (unsigned int)height);
+        }
         if (call->kind == DRAW_RECT) {
-            CHECK(call->left == MENU_LEFT && call->top == MENU_TOP);
-            CHECK(call->width == MENU_WIDTH && call->height == MENU_HEIGHT);
+            CHECK(call->left == left && call->top == top);
+            CHECK(call->width == (unsigned int)width && call->height == (unsigned int)height);
+            expected_texts += width == 256 ? 8 : 9;
             frame_start = index;
         }
         if (call->kind == DRAW_RECT || call->kind == DRAW_FILL_RECT) {
-            CHECK(call->left >= MENU_LEFT && call->top >= MENU_TOP);
-            CHECK(call->left + (int)call->width <= MENU_LEFT + MENU_WIDTH);
-            CHECK(call->top + (int)call->height <= MENU_TOP + MENU_HEIGHT);
+            CHECK(call->left >= left && call->top >= top);
+            CHECK(call->left + (int)call->width <= left + width);
+            CHECK(call->top + (int)call->height <= top + height);
             CHECK(call->left >= 0 && call->left + (int)call->width <= 320);
             CHECK(call->top >= 20 && call->top + (int)call->height <= 220);
         }
@@ -1811,10 +1894,10 @@ static void expect_menu_layout(void)
                 continue;
             }
             ++menu_texts;
-            CHECK_MSG(call->left >= MENU_LEFT && call->top >= MENU_TOP &&
-                      call->left + (int)call->width <= MENU_LEFT + MENU_WIDTH &&
-                      call->top + (int)call->height <= MENU_TOP + MENU_HEIGHT,
-                      "menu text '%s' at (%d,%d) size %ux%u exceeds fixed 224x116 bounds",
+            CHECK_MSG(call->left >= left && call->top >= top &&
+                      call->left + (int)call->width <= left + width &&
+                      call->top + (int)call->height <= top + height,
+                      "menu text '%s' at (%d,%d) size %ux%u exceeds modal bounds",
                       call->text, call->left, call->top, call->width, call->height);
             for (other = frame_start; other < index; ++other) {
                 const DrawCall *previous = &mock.draw[other];
@@ -1834,35 +1917,38 @@ static void expect_menu_layout(void)
     }
     for (index = 0; index < ARRAY_COUNT(labels); ++index)
         CHECK_MSG(seen[index], "missing real menu label/value '%s'", labels[index]);
-    CHECK(menu_texts == draw_count(DRAW_RECT) * 9);
+    CHECK(menu_texts == expected_texts);
     CHECK(mock.active_pixels > 0 && mock.out_of_bounds == 0);
 }
 
 static void test_menu_layout_bounds(void)
 {
-    static const uint8_t selected[] = {0, 1, 1, 2, 2, 2, 1, 1};
+    static const uint8_t selected[] = {0, 1, 1, 2, 2, 1, 1};
     static const char *const banks[] = {
-        "F1/3/5/7", "F1/3/5/7", "F1/3/5/7", "F1/3/5/7",
-        "F2/4/6/8", "F1/3/5/7", "F1/3/5/7", "F1/3/5/7"
+        "F1/3/5/7", "F1/3/5/7", "F2/4/6/8", "F1/3/5/7"
     };
     MenuStart start;
     menu_fixture();
     start = menu_start();
     queue_key(NO_KEYS);
     queue_tap(kb_KeyDown);
-    queue_tap(kb_KeyEnter);
+    queue_tap(kb_KeyEnter); /* Indicators off. */
+    queue_tap(kb_KeyDown);
+    queue_tap(kb_KeyEnter); /* Key Settings. */
     queue_tap(kb_KeyDown);
     queue_key(KEYS(kb_KeyEnter));
     queue_key(KEYS(kb_KeyEnter));
-    queue_key(KEYS(kb_KeyLeft));
+    queue_key(KEYS(kb_KeyLeft)); /* Held latch: must not toggle again. */
     queue_key(NO_KEYS);
     queue_tap(kb_KeyEnter);
+    queue_tap(kb_KeyGraph);
+    queue_key(NO_KEYS);
     queue_tap(kb_KeyUp);
-    queue_tap(kb_KeyEnter);
+    queue_tap(kb_KeyEnter); /* Indicators on. */
     queue_resume(kb_KeyGraph);
     CHECK(poll_keys(KEYS(kb_KeyGraph)));
     expect_menu_selection(selected, ARRAY_COUNT(selected));
-    expect_menu_values(128, banks, ARRAY_COUNT(banks));
+    expect_menu_values(100, banks, ARRAY_COUNT(banks));
     expect_menu_layout();
     expect_menu_return(start, true);
     expect_menu_idle(start.renders + 1, true);
@@ -1957,7 +2043,8 @@ static void observe_menu_guest_idle(void)
 
 static void test_menu_input_isolation(void)
 {
-    static const uint8_t selected[] = {0, 1, 1, 2, 2, 1, 0};
+    /* Left on the Key Settings link is ignored; only Enter opens it. */
+    static const uint8_t selected[] = {0, 1, 1, 2, 1, 0};
     unsigned int held_guest;
     for (held_guest = 0; held_guest < 2; ++held_guest) {
         const KeySnapshot scans[] = {

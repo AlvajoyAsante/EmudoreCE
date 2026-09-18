@@ -12,13 +12,15 @@ OUTPUT ?= build/parallax-$(JIT)
 INPUT ?= none
 RESUME ?= none
 DISK ?= ../Parallax.d64
+GEOS_FRAMES ?= 240
+GEOS_OUTPUT ?= build/geos-startup
 
 ifeq ($(OS),Windows_NT)
 EXEEXT := .exe
 endif
 GAME_PROGRAM := game_test$(EXEEXT)
 
-.PHONY: all game-check
+.PHONY: all game-check geos-check
 all: $(GAME_PROGRAM)
 
 $(GAME_PROGRAM): game_test.c target_test.c cemu_throttle.c cemu_throttle.h ../../src/jit_emit.c ../../src/jit_emit.h $(CEMU)/libcemucore.a build/vrEmu6502.o
@@ -26,6 +28,9 @@ $(GAME_PROGRAM): game_test.c target_test.c cemu_throttle.c cemu_throttle.h ../..
 
 game-check: $(GAME_PROGRAM)
 	"$(CURDIR)/$(GAME_PROGRAM)" "$(TARGET_IMAGE)" $(FRAMES) $(JIT) $(FILE_INDEX) "$(OUTPUT)" "$(INPUT)" "$(RESUME)" "$(DISK)"
+
+geos-check: $(GAME_PROGRAM)
+	"$(CURDIR)/$(GAME_PROGRAM)" "$(TARGET_IMAGE)" $(GEOS_FRAMES) $(JIT) 0 "$(GEOS_OUTPUT)" none none ../GEOS64.d64
 
 # Run every tests/*.d64 and tests/*.t64 image with one final summary table:
 # powershell -ExecutionPolicy Bypass -File run_all_games.ps1
