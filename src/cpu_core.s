@@ -36,6 +36,7 @@
 .extern _cpu_illegal_pc
 .extern _drive_trap_load
 .extern _drive_trap_fastload
+.extern _drive_trap_geos
 .extern _cpu_brk_native
 
 .macro INC_PC
@@ -565,6 +566,15 @@ trap_12_h:
     push iy
     call _drive_trap_fastload
     pop iy
+    jp trap_resume
+
+trap_22_h:
+    call sync_out
+    push iy
+    call _drive_trap_geos
+    pop iy
+    or a, a
+    jp z, jam_22_h
     jp trap_resume
 
 brk_h:
@@ -2289,7 +2299,7 @@ op_table:
     OPS nop_zpx_h,   ora_zpx_h,  asl_zpx_h,   slo_zpx_h
     OPS clc_h,       ora_absy_h, nop_h,       slo_absy_h
     OPS nop_absx_h,  ora_absx_h, asl_absx_h,  slo_absx_h
-    OPS jsr_h,       and_indx_h, jam_22_h, rla_indx_h
+    OPS jsr_h,       and_indx_h, trap_22_h,   rla_indx_h
     OPS bit_zp_h,    and_zp_h,   rol_zp_h,    rla_zp_h
     OPS plp_h,       and_imm_h,  rol_a_h,     anc_h
     OPS bit_abs_h,   and_abs_h,  rol_abs_h,   rla_abs_h
