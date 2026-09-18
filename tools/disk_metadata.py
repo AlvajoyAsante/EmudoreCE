@@ -15,6 +15,8 @@ CHECKSUM = struct.Struct("<I")
 def variable_name(package_id: str) -> str:
     if not 1 <= len(package_id) <= 4 or not package_id.isalnum() or package_id != package_id.upper():
         raise ValueError("disk metadata requires a 1-4 character uppercase alphanumeric package ID")
+    if package_id == "DSK":
+        return VARIABLE_NAME
     return f"EC{package_id}IN"
 
 
@@ -22,12 +24,17 @@ def _validate_binding(payload: bytes, file_types: bytes) -> None:
     count = len(file_types)
     if not 1 <= count <= 255:
         raise ValueError("disk metadata requires 1..255 file types")
-    if not payload or payload[0] != count:
-        raise ValueError("disk metadata file count does not match the DSK payload")
-    if not 1 + count * 22 <= len(payload) <= 0xFFFFFFFF:
-        raise ValueError("invalid DSK payload length for disk metadata")
-    if any((file_type & 0x87) != 0x82 for file_type in file_types):
-        raise ValueError("disk metadata file types must be closed PRGs")
+    if len(payload) >= 174848:
+        # Raw D64 image payload: any closed CBM file types allowed
+        if any((file_type & 0x80) != 0x80 for file_type in file_types):
+            raise ValueError("disk metadata file types must be closed files")
+    else:
+        if not payload or payload[0] != count:
+            raise ValueError("disk metadata file count does not match the DSK payload")
+        if not 1 + count * 22 <= len(payload) <= 0xFFFFFFFF:
+            raise ValueError("invalid DSK payload length for disk metadata")
+        if any((file_type & 0x87) != 0x82 for file_type in file_types):
+            raise ValueError("disk metadata file types must be closed PRGs")
 
 
 def build_metadata(payload: bytes, file_types: bytes) -> bytes:

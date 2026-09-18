@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from py65.devices.mpu6502 import MPU
 
-import rom_to_appvar as d64
+import d64_to_appvar as d64
 import disk_optimizations as optimizations
 import optimize_appvar as converter
 

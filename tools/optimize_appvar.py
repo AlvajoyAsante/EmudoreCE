@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import subprocess
 
-import rom_to_appvar as d64
+import d64_to_appvar as d64
 import disk_metadata
 import disk_optimizations
 import files_to_dsk_appvar as files_converter

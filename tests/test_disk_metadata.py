@@ -12,7 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-d64 = importlib.import_module("rom_to_appvar")
+d64 = importlib.import_module("d64_to_appvar")
 metadata = importlib.import_module("disk_metadata")
 optimizer = importlib.import_module("optimize_appvar")
 rta = importlib.import_module("appvar_builder")

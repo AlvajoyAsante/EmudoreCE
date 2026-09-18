@@ -23,7 +23,7 @@ import subprocess
 from pathlib import Path
 
 import disk_metadata
-import rom_to_appvar as rta
+import appvar_builder as rta
 
 SECTORS_PER_TRACK = [21] * 17 + [19] * 7 + [18] * 6 + [17] * 5  # tracks 1..35
 DIR_TRACK, DIR_SECTOR = 18, 1
@@ -104,6 +104,47 @@ def read_directory_entries(image: bytes) -> list[DirectoryEntry]:
 def read_directory(image: bytes) -> list[tuple[bytes, int, int]]:
     """Return (petscii name[16], start track, start sector) for closed PRGs."""
     return [(entry.name, entry.track, entry.sector) for entry in read_directory_entries(image)]
+
+
+def is_geos_disk(image: bytes) -> bool:
+    """Check if D64 image has GEOS signature in BAM or GEOS file structures."""
+    if len(image) < D64_SIZE_35_TRACKS:
+        return False
+    bam = sector_offset(18, 0)
+    if image[bam + 0xAD : bam + 0xB1] == b"GEOS":
+        return True
+    track, sector = DIR_TRACK, DIR_SECTOR
+    seen = set()
+    while track and (track, sector) not in seen:
+        seen.add((track, sector))
+        block = image[sector_offset(track, sector):][:256]
+        for i in range(8):
+            entry = block[2 + i * 32 : 2 + i * 32 + 30]
+            file_type = entry[0]
+            if (file_type & 0x80) and (file_type & 0x07) == 3:  # USR file
+                return True
+            geos_struct = entry[21]
+            if (file_type & 0x80) and geos_struct == 1:  # VLIR file
+                return True
+        track, sector = block[0], block[1]
+    return False
+
+
+def read_all_directory_entries(image: bytes) -> list[DirectoryEntry]:
+    """Return all closed files (PRG, USR, SEQ, REL) in directory order."""
+    files = []
+    track, sector = DIR_TRACK, DIR_SECTOR
+    seen = set()
+    while track and (track, sector) not in seen:
+        seen.add((track, sector))
+        block = image[sector_offset(track, sector):][:256]
+        for i in range(8):
+            entry = block[2 + i * 32 : 2 + i * 32 + 30]
+            file_type = entry[0]
+            if (file_type & 0x80) and (file_type & 0x07) in (1, 2, 3, 4):
+                files.append(DirectoryEntry(bytes(entry[3:19]), entry[1], entry[2], file_type))
+        track, sector = block[0], block[1]
+    return files
 
 
 def read_t64_directory_entries(image: bytes) -> list[TapeEntry]:
@@ -206,33 +247,46 @@ def build_t64_payload(image: bytes) -> tuple[bytes, bytes]:
 
 
 def convert(input_path: Path, output_dir: Path, convbin: str,
-            package_id: str | None = None) -> list[Path]:
+            package_id: str | None = None, raw_d64: bool = False) -> list[Path]:
+    if package_id is None:
+        package_id = "DSK"
+    else:
+        package_id = normalize_package_id(package_id)
+
+    metadata_name = disk_metadata.variable_name(package_id)
+    rta.validate_output_paths([output_dir / f"EC{package_id}00.8xv", output_dir / f"{metadata_name}.8xv"], [input_path])
+
     image = input_path.read_bytes()
     suffix = input_path.suffix.lower()
+
     if suffix == ".d64":
         if len(image) not in (D64_SIZE_35_TRACKS, D64_SIZE_35_TRACKS + 683):
             raise ValueError(
                 f"not a 35-track .d64 image ({len(image)} bytes); "
                 "40-track and error-byte variants are not supported"
             )
-        package_id = disk_package_id(image, input_path, package_id)
-        payload = build_payload(image)
-        file_types = bytes(entry.file_type for entry in read_directory_entries(image))
+        if raw_d64 or is_geos_disk(image):
+            payload = image[:D64_SIZE_35_TRACKS]
+            file_types = bytes(entry.file_type for entry in read_all_directory_entries(image))
+            if not file_types:
+                file_types = bytes([0x82])
+            print(f"packed raw D64 image, payload {len(payload)} bytes, {len(file_types)} directory entries")
+        else:
+            payload = build_payload(image)
+            file_types = bytes(entry.file_type for entry in read_directory_entries(image))
+            print(f"packed {payload[0]} PRG files, payload {len(payload)} bytes")
     elif suffix == ".t64":
-        package_id = normalize_package_id(package_id if package_id is not None else input_path.stem)
         payload, file_types = build_t64_payload(image)
+        print(f"packed {payload[0]} PRG files, payload {len(payload)} bytes")
     else:
         raise ValueError(
             f"unsupported input extension {input_path.suffix!r}; expected .d64 or .t64"
         )
 
-    print(f"packed {payload[0]} PRG files, payload {len(payload)} bytes")
-
     # Stored uncompressed on purpose: src/drive.c reads file bytes directly
     # out of the archived AppVar (no RAM to decompress a whole disk into).
     chunks = rta.build_chunks(payload, "dsk", len(payload), rta.COMPRESSION_NONE)
     metadata = disk_metadata.build_metadata(payload, file_types)
-    metadata_name = disk_metadata.variable_name(package_id)
     metadata_path = output_dir / f"{metadata_name}.8xv"
     destinations = [output_dir / f"EC{package_id}{index:02X}.8xv" for index in range(len(chunks))]
     rta.validate_output_paths(destinations + [metadata_path], [input_path])
@@ -247,13 +301,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("bin/rom"))
     parser.add_argument("--id", dest="package_id", help="1-4 character AppVar package ID")
     parser.add_argument("--convbin", help="path to the CEdev convbin executable")
+    parser.add_argument("--raw", action="store_true", help="package raw D64 image (required for GEOS and sector loaders)")
+    parser.add_argument("--geos", action="store_true", dest="raw", help="alias for --raw")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        outputs = convert(args.input, args.output, rta.find_convbin(args.convbin), args.package_id)
+        outputs = convert(args.input, args.output, rta.find_convbin(args.convbin), args.package_id, args.raw)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         raise SystemExit(f"error: {error}") from error
     for output in outputs:
