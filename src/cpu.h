@@ -1,9 +1,5 @@
 /*
- * emudore-CE: MOS 6510 CPU (C port of cpu.h).
- *
- * All of the original C++ inline member functions become ordinary functions
- * that operate on a single global CpuState. Register/flag accessors become
- * plain macros so the instruction implementations stay readable.
+ * emudore-CE: MOS 6510 state and native CPU/JIT support interface.
  */
 #ifndef EMUDORE_CE_CPU_H
 #define EMUDORE_CE_CPU_H
@@ -29,12 +25,12 @@ typedef struct
 
 extern CpuState cpu;
 
-/* diagnostics: last illegal opcode that stopped cpu_emulate (0 = none) */
+/* diagnostics: last illegal opcode that stopped cpu_run (0 = none) */
 extern uint8_t  cpu_illegal_op;
 extern uint16_t cpu_illegal_pc;
 
 /* TIBoyce-style waitloop skip: set by vic on raster-register busy polls,
-   consumed by both CPU cores' IO-read paths (ends the line batch early) */
+   consumed by the native core's IO-read path (ends the line batch early) */
 extern uint8_t cpu_warp;
 
 /* ROM-JIT gate: KERNAL bytes verified against the native blocks (c64.c). */
@@ -47,10 +43,8 @@ extern uint8_t cpu_fallback_op;
 #ifndef NDEBUG
 /* Per-opcode C fallback counts for selecting the next asm-core handler. */
 extern uint16_t cpu_fallback_counts[256];
-/* Bit mask describing the most recent assembly self-test mismatch. */
+/* Nonzero when the most recent assembly startup self-test failed. */
 extern uint32_t cpu_asm_selftest_mismatch;
-/* C reference bytes from the most recent assembly self-test. */
-extern uint8_t cpu_asm_selftest_ref_mem[4];
 #endif
 
 /* Native block hit counters (KERNAL wait-key, UDTIM, Swirler, dynamic RAM). */
@@ -83,35 +77,12 @@ void cpu_reset(void);
  */
 bool cpu_run(unsigned int until_cycles);
 /**
- * Execute one opcode with the portable C core.
+ * Validate native bank-port read-modify-write handling against expected state.
+ * Requires initialized memory; restores CPU state, scratch bytes and banking.
  *
- * @return false on an illegal opcode or trap failure; true otherwise.
- */
-/**
- * Self-test the hybrid eZ80 assembly core against the C core.
- *
- * @return true when both cores produced identical machine state and the asm
- *         core is now enabled for later cpu_run() calls.
+ * @return true when the native startup checks pass.
  */
 bool cpu_asm_selftest(void);
-/**
- * Run one CPU batch with the pure C core only.
- *
- * @param until_cycles Inclusive cycle target for the batch.
- * @return false on an illegal opcode or trap failure; true otherwise.
- */
-/**
- * Compare C-core and asm-core execution during KERNAL boot.
- *
- * @param machine_reset Callback that restores RAM and chips to a deterministic
- *        pre-run state before each comparison attempt.
- * @param report Callback receiving the first divergent budget and both CPU
- *        states, or a zero budget when no divergence was found.
- */
-void cpu_asm_boot_probe(void (*machine_reset)(void),
-                        void (*report)(unsigned int budget,
-                                       const CpuState *c_state,
-                                       const CpuState *a_state));
 /** Queue or deliver a maskable IRQ on the emulated 6510. */
 void cpu_irq(void);
 /** Queue or deliver a non-maskable interrupt on the emulated 6510. */
