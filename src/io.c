@@ -421,6 +421,11 @@ static void set_vram_view(bool enabled)
     vic_set_render_suppressed(enabled);
     if (enabled)
         io_refresh_vram_view();
+    else
+    {
+        /* The full-screen viewer overwrote both HUD bands. */
+        indicator_top = indicator_bottom = indicator_layer = indicator_status = 0xff;
+    }
 }
 
 static void draw_settings_menu(uint8_t selected)
@@ -1242,14 +1247,16 @@ bool io_emulate(void)
 
     if (!quit_requested && vram_view_active)
     {
-        if (kb_IsDown(kb_KeyGraph) ||
-            (kb_IsDown(kb_Key2nd) && kb_IsDown(kb_KeyTrace)))
+        bool chord_down = kb_IsDown(kb_Key2nd) && kb_IsDown(kb_KeyTrace);
+        if (kb_IsDown(kb_KeyGraph) || (chord_down && !(host_chords & 0x08)))
         {
             set_vram_view(false);
             vic_request_render();
         }
         else
             io_refresh_vram_view();
+        /* The entry chord must be released before it can close the viewer. */
+        host_chords = chord_down ? 0x08 : 0;
         return !quit_requested;
     }
 
@@ -1278,6 +1285,9 @@ bool io_emulate(void)
         if (kb_IsDown(kb_KeyTrace))
             new_chords |= 0x08;
     }
+    /* Chord presses/releases can change the HUD without changing guest
+       input (host shortcuts deliberately suppress joystick fire). */
+    keys_changed = new_chords != host_chords;
     if ((new_chords & 0x01) && !(host_chords & 0x01))
         alpha_lock = !alpha_lock;
     if ((new_chords & 0x02) && !(host_chords & 0x02))
@@ -1296,6 +1306,10 @@ bool io_emulate(void)
         vic_request_render();
     }
     host_chords = new_chords;
+    /* Keep the viewer a pure RAM image and don't leak its entry chord to
+       the guest or paint HUD text over the freshly copied frame. */
+    if (vram_view_active)
+        return !quit_requested;
     alpha_active = alpha_lock || kb_IsDown(kb_KeyAlpha);
 
     if (kb_IsDown(kb_Key2nd))

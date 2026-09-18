@@ -30,8 +30,34 @@ bool drive_identity(DriveIdentity *identity);
 void drive_invalidate(void);
 
 /* 6502 JAM opcodes used as traps; never produced by real code. */
-#define DRIVE_TRAP_OPCODE  0x02 /* KERNAL LOAD ($F4A5)                  */
-#define DRIVE_TRAP2_OPCODE 0x12 /* resident game fastloader (signature) */
+#define DRIVE_TRAP_OPCODE      0x02 /* KERNAL LOAD ($F4A5)                  */
+#define DRIVE_TRAP2_OPCODE     0x12 /* resident game fastloader (signature) */
+#define DRIVE_GEOS_TRAP_OPCODE 0x22 /* GEOS 1541 virtual driver ($9D80)     */
+
+/**
+ * Check if the current disk package is a raw sector D64 image.
+ */
+bool drive_is_d64(void);
+
+/**
+ * Check if the current disk package is recognized as a GEOS disk.
+ */
+bool drive_is_geos(void);
+
+/**
+ * Install the GEOS virtual 1541 disk driver jump table at $9D80..$9DA4.
+ */
+void drive_install_geos_driver(void);
+
+/**
+ * Read one 256-byte sector from the disk image into destination.
+ */
+bool drive_read_sector(uint8_t track, uint8_t sector, uint8_t *destination);
+
+/**
+ * Write one 256-byte sector into the disk sector cache.
+ */
+bool drive_write_sector(uint8_t track, uint8_t sector, const uint8_t *source);
 
 /**
  * Initialize the virtual drive from a selected disk AppVar package.
@@ -108,6 +134,13 @@ bool drive_trap_load(void);
 bool drive_trap_fastload(void);
 
 /**
+ * Service a trapped GEOS 1541 disk driver call at $9D80..$9DA4.
+ *
+ * @return true when the trap was recognized and handled; false otherwise.
+ */
+bool drive_trap_geos(void);
+
+/**
  * Advance drive-side background work.
  *
  * This mainly watches for the BASIC READY prompt and injects the staged
@@ -126,11 +159,14 @@ typedef struct
     uint8_t sa;        /* secondary address ($B9)                   */
     uint8_t len;       /* filename length                           */
     uint8_t name[3];   /* first filename bytes (PETSCII)            */
+    uint8_t track;     /* raw D64 source track, 0 for packaged DSK  */
+    uint8_t sector;    /* raw D64 source sector                     */
 } DriveTrace;
 
 #define DRIVE_TRACE_MAX 16
 extern DriveTrace drive_trace[DRIVE_TRACE_MAX];
 extern uint8_t drive_trace_count; /* total traps (keeps the first 16) */
 extern uint8_t drive_autostart_stage; /* 0=LOAD pending, 1=loaded, 2=RUN queued */
+extern unsigned int drive_geos_call_count; /* valid GEOS virtual-driver calls */
 
 #endif /* EMUDORE_CE_DRIVE_H */

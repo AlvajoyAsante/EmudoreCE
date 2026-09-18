@@ -80,7 +80,11 @@ __attribute__((__minsize__))
 #endif
 uint8_t vic_row_asm_selftest(void)
 {
-    enum { GUARD_SIZE = 16, GUARD_VALUE = 0xa5 };
+    enum
+    {
+        GUARD_SIZE = 16,
+        GUARD_VALUE = 0xa5
+    };
     static uint8_t source[320];
     static uint8_t screen[40];
     static uint8_t colors[40];
@@ -94,7 +98,7 @@ uint8_t vic_row_asm_selftest(void)
     {
         for (scanline = 0; scanline < 8; ++scanline)
             source[cell * 8 + scanline] = (uint8_t)((cell * 37u) ^
-                (scanline * 73u) ^ (0x80u >> scanline));
+                                                    (scanline * 73u) ^ (0x80u >> scanline));
         screen[cell] = (uint8_t)((((cell + 3u) & 15u) << 4) | ((cell + 9u) & 15u));
         colors[cell] = (uint8_t)(0xa0u | ((cell + 5u) & 15u));
     }
@@ -199,23 +203,20 @@ static int cur_line;
 static uint8_t composed_pixels[8][320];
 static uint8_t *const composed_rows[8] = {
     composed_pixels[0], composed_pixels[1], composed_pixels[2], composed_pixels[3],
-    composed_pixels[4], composed_pixels[5], composed_pixels[6], composed_pixels[7]
-};
+    composed_pixels[4], composed_pixels[5], composed_pixels[6], composed_pixels[7]};
 static uint8_t *composed_destinations[8];
 static int composed_first_y;
 static uint8_t composed_count;
 
 static const uint16_t row_offset_40[VIC_G_RES_Y / 8] = {
-    0,   40,   80,  120,  160,  200,  240,  280,  320,  360,
-     400,  440,  480,  520,  560,  600,  640,  680,  720,  760,
-     800,  840,  880,  920,  960
-};
+    0, 40, 80, 120, 160, 200, 240, 280, 320, 360,
+    400, 440, 480, 520, 560, 600, 640, 680, 720, 760,
+    800, 840, 880, 920, 960};
 
 static const uint16_t row_offset_320[VIC_G_RES_Y / 8] = {
-    0,  320,  640,  960, 1280, 1600, 1920, 2240, 2560, 2880,
+    0, 320, 640, 960, 1280, 1600, 1920, 2240, 2560, 2880,
     3200, 3520, 3840, 4160, 4480, 4800, 5120, 5440, 5760, 6080,
-    6400, 6720, 7040, 7360, 7680
-};
+    6400, 6720, 7040, 7360, 7680};
 
 void vic_request_render(void)
 {
@@ -374,8 +375,7 @@ static void set_raster_counter(int v)
 
 /* noinline: an inlined read lets the optimizer range-narrow raster math to
    14-bit adds, which the ez80 backend cannot legalize (compiler crash). */
-__attribute__((noinline))
-static int get_raster_counter(void)
+__attribute__((noinline)) static int get_raster_counter(void)
 {
     return raster_c | ((cr1 & 0x80) << 1);
 }
@@ -398,12 +398,12 @@ static bool raster_irq_enabled_fn(void)
 }
 
 static uint8_t horizontal_scroll(void) { return cr2 & 0x7; }
-static uint8_t vertical_scroll(void)   { return cr1 & 0x7; }
+static uint8_t vertical_scroll(void) { return cr1 & 0x7; }
 
-static bool is_sprite_enabled(int n)       { return ISSET_BIT(sprite_enabled, n); }
-static bool is_double_width_sprite(int n)  { return ISSET_BIT(sprite_double_width, n); }
+static bool is_sprite_enabled(int n) { return ISSET_BIT(sprite_enabled, n); }
+static bool is_double_width_sprite(int n) { return ISSET_BIT(sprite_double_width, n); }
 static bool is_double_height_sprite(int n) { return ISSET_BIT(sprite_double_height, n); }
-static bool is_multicolor_sprite(int n)    { return ISSET_BIT(sprite_multicolor, n); }
+static bool is_multicolor_sprite(int n) { return ISSET_BIT(sprite_multicolor, n); }
 
 static int sprite_x(int n)
 {
@@ -455,12 +455,10 @@ static uint16_t get_sprite_ptr(int n)
    so $D01E needs this side channel for both-bits collisions. */
 static uint8_t sprite_line_mask[VIC_SPRITES_FIRST_COL + 512 + 48];
 static const uint8_t sprite_pixel_masks[8] = {
-    0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01
-};
+    0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01};
 
-__attribute__((__always_inline__))
-static inline void sprite_pixel_at(uint8_t bit, bool behind, uint8_t *row,
-                                   int fx, uint8_t color)
+__attribute__((__always_inline__)) static inline void sprite_pixel_at(uint8_t bit, bool behind, uint8_t *row,
+                                                                      int fx, uint8_t color)
 {
     unsigned int idx = (unsigned int)(fx - IO_CROP_X);
     uint8_t previous;
@@ -482,9 +480,8 @@ static inline void sprite_pixel_at(uint8_t bit, bool behind, uint8_t *row,
         row[idx] = (uint8_t)(color | IO_TAG_SPRITE | (under & IO_TAG_FOREGROUND));
 }
 
-__attribute__((__always_inline__))
-static inline void sprite_pixel_run(uint8_t bit, bool behind, uint8_t *row,
-                                    int fx, uint8_t color, uint8_t width)
+__attribute__((__always_inline__)) static inline void sprite_pixel_run(uint8_t bit, bool behind, uint8_t *row,
+                                                                       int fx, uint8_t color, uint8_t width)
 {
     unsigned int idx;
     uint8_t *destination;
@@ -538,8 +535,7 @@ static void draw_char_edge(uint8_t *destination, const uint8_t *glyph_line,
         uint8_t palette[4] = {
             bgcolor[0], bgcolor[1],
             (uint8_t)(bgcolor[2] | IO_TAG_FOREGROUND),
-            (uint8_t)((color & 7) | IO_TAG_FOREGROUND)
-        };
+            (uint8_t)((color & 7) | IO_TAG_FOREGROUND)};
         for (pixel = 0; pixel < width; ++pixel)
             destination[pixel] = palette[(data >> (6 - (pixel & 6))) & 3];
     }
@@ -547,7 +543,8 @@ static void draw_char_edge(uint8_t *destination, const uint8_t *glyph_line,
     {
         for (pixel = 0; pixel < width; ++pixel)
             destination[pixel] = (data & (0x80u >> pixel))
-                               ? foreground : background;
+                                     ? foreground
+                                     : background;
     }
 }
 
@@ -654,23 +651,47 @@ static void draw_raster_char_mode(void)
                 uint8_t bg2 = (uint8_t)(bgcolor[2] | IO_TAG_FOREGROUND);
                 uint8_t px, v;
                 data = chline[(uint16_t)((uint16_t)sc << 3)];
-                px = (data >> 6) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[0] = d[1] = v;
-                px = (data >> 4) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[2] = d[3] = v;
-                px = (data >> 2) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[4] = d[5] = v;
-                px = data & 3;        v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[6] = d[7] = v;
+                px = (data >> 6) & 3;
+                v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                  : (px == 1)   ? bgcolor[1]
+                                                : bgcolor[0];
+                d[0] = d[1] = v;
+                px = (data >> 4) & 3;
+                v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                  : (px == 1)   ? bgcolor[1]
+                                                : bgcolor[0];
+                d[2] = d[3] = v;
+                px = (data >> 2) & 3;
+                v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                  : (px == 1)   ? bgcolor[1]
+                                                : bgcolor[0];
+                d[4] = d[5] = v;
+                px = data & 3;
+                v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                  : (px == 1)   ? bgcolor[1]
+                                                : bgcolor[0];
+                d[6] = d[7] = v;
             }
             else
             {
                 uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
                 data = chline[(uint16_t)((uint16_t)sc << 3)];
-                if (data & 0x80) d[0] = fg;
-                if (data & 0x40) d[1] = fg;
-                if (data & 0x20) d[2] = fg;
-                if (data & 0x10) d[3] = fg;
-                if (data & 0x08) d[4] = fg;
-                if (data & 0x04) d[5] = fg;
-                if (data & 0x02) d[6] = fg;
-                if (data & 0x01) d[7] = fg;
+                if (data & 0x80)
+                    d[0] = fg;
+                if (data & 0x40)
+                    d[1] = fg;
+                if (data & 0x20)
+                    d[2] = fg;
+                if (data & 0x10)
+                    d[3] = fg;
+                if (data & 0x08)
+                    d[4] = fg;
+                if (data & 0x04)
+                    d[5] = fg;
+                if (data & 0x02)
+                    d[6] = fg;
+                if (data & 0x01)
+                    d[7] = fg;
             }
         }
     }
@@ -774,31 +795,39 @@ static void draw_raster_bitmap_mode(void)
             if (c == VIC_G_COLS - 1 && xs)
                 break; /* scrolled last column would overrun the row */
 
-        if (mc)
-        {
-            uint8_t px;
-            /* MC bitmap: 01 = background priority, 10/11 = foreground */
-            lut[1] = (sc >> 4) & 0x0f;
-            lut[2] = (uint8_t)((sc & 0x0f) | IO_TAG_FOREGROUND);
-            lut[3] = (uint8_t)((colram[c] & 0x0f) | IO_TAG_FOREGROUND);
-            px = lut[(data >> 6) & 3]; d[0] = px; d[1] = px;
-            px = lut[(data >> 4) & 3]; d[2] = px; d[3] = px;
-            px = lut[(data >> 2) & 3]; d[4] = px; d[5] = px;
-            px = lut[data & 3];        d[6] = px; d[7] = px;
-        }
-        else
-        {
-            uint8_t fg = (uint8_t)(((sc >> 4) & 0x0f) | IO_TAG_FOREGROUND);
-            uint8_t bg = sc & 0x0f;
-            d[0] = (data & 0x80) ? fg : bg;
-            d[1] = (data & 0x40) ? fg : bg;
-            d[2] = (data & 0x20) ? fg : bg;
-            d[3] = (data & 0x10) ? fg : bg;
-            d[4] = (data & 0x08) ? fg : bg;
-            d[5] = (data & 0x04) ? fg : bg;
-            d[6] = (data & 0x02) ? fg : bg;
-            d[7] = (data & 0x01) ? fg : bg;
-        }
+            if (mc)
+            {
+                uint8_t px;
+                /* MC bitmap: 01 = background priority, 10/11 = foreground */
+                lut[1] = (sc >> 4) & 0x0f;
+                lut[2] = (uint8_t)((sc & 0x0f) | IO_TAG_FOREGROUND);
+                lut[3] = (uint8_t)((colram[c] & 0x0f) | IO_TAG_FOREGROUND);
+                px = lut[(data >> 6) & 3];
+                d[0] = px;
+                d[1] = px;
+                px = lut[(data >> 4) & 3];
+                d[2] = px;
+                d[3] = px;
+                px = lut[(data >> 2) & 3];
+                d[4] = px;
+                d[5] = px;
+                px = lut[data & 3];
+                d[6] = px;
+                d[7] = px;
+            }
+            else
+            {
+                uint8_t fg = (uint8_t)(((sc >> 4) & 0x0f) | IO_TAG_FOREGROUND);
+                uint8_t bg = sc & 0x0f;
+                d[0] = (data & 0x80) ? fg : bg;
+                d[1] = (data & 0x40) ? fg : bg;
+                d[2] = (data & 0x20) ? fg : bg;
+                d[3] = (data & 0x10) ? fg : bg;
+                d[4] = (data & 0x08) ? fg : bg;
+                d[5] = (data & 0x04) ? fg : bg;
+                d[6] = (data & 0x02) ? fg : bg;
+                d[7] = (data & 0x01) ? fg : bg;
+            }
         }
     }
 }
@@ -807,8 +836,7 @@ static void draw_raster_bitmap_mode(void)
    row, each cell's screen code / colour / mode branch is fetched ONCE and
    all 8 scanlines are written together (the per-line path refetches them
    8x). Blank glyph rows (spaces) skip their 8 pixels entirely. */
-__attribute__((noinline))
-static void draw_char_row(int rstr)
+__attribute__((noinline)) static void draw_char_row(int rstr)
 {
     int y = rstr - VIC_FIRST_VISIBLE_LINE;
     int line = rstr - (VIC_G_FIRST_LINE - 3) - vertical_scroll();
@@ -887,62 +915,86 @@ static void draw_char_row(int rstr)
 
             if (ecm)
             {
-            uint8_t cbg = bgcolor[sc >> 6];
-            uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
-            chline = chardata + ((unsigned int)(sc & 0x3f) << 3);
-            for (k = 0; k < 8; ++k)
-            {
-                uint8_t data = chline[k];
-                uint8_t *d = rows[k] + xoff;
-                d[0] = (data & 0x80) ? fg : cbg;
-                d[1] = (data & 0x40) ? fg : cbg;
-                d[2] = (data & 0x20) ? fg : cbg;
-                d[3] = (data & 0x10) ? fg : cbg;
-                d[4] = (data & 0x08) ? fg : cbg;
-                d[5] = (data & 0x04) ? fg : cbg;
-                d[6] = (data & 0x02) ? fg : cbg;
-                d[7] = (data & 0x01) ? fg : cbg;
+                uint8_t cbg = bgcolor[sc >> 6];
+                uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
+                chline = chardata + ((unsigned int)(sc & 0x3f) << 3);
+                for (k = 0; k < 8; ++k)
+                {
+                    uint8_t data = chline[k];
+                    uint8_t *d = rows[k] + xoff;
+                    d[0] = (data & 0x80) ? fg : cbg;
+                    d[1] = (data & 0x40) ? fg : cbg;
+                    d[2] = (data & 0x20) ? fg : cbg;
+                    d[3] = (data & 0x10) ? fg : cbg;
+                    d[4] = (data & 0x08) ? fg : cbg;
+                    d[5] = (data & 0x04) ? fg : cbg;
+                    d[6] = (data & 0x02) ? fg : cbg;
+                    d[7] = (data & 0x01) ? fg : cbg;
+                }
             }
-        }
             else if (mcm && (color & 0x08))
             {
-            uint8_t mc3 = (uint8_t)((color & 0x07) | IO_TAG_FOREGROUND);
-            uint8_t bg2 = (uint8_t)(bgcolor[2] | IO_TAG_FOREGROUND);
-            chline = chardata + ((unsigned int)sc << 3);
-            for (k = 0; k < 8; ++k)
-            {
-                uint8_t data = chline[k];
-                uint8_t *d;
-                uint8_t px, v;
-                if (!data)
-                    continue; /* all-00 pairs equal the bg0 memset */
-                d = rows[k] + xoff;
-                px = (data >> 6) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[0] = d[1] = v;
-                px = (data >> 4) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[2] = d[3] = v;
-                px = (data >> 2) & 3; v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[4] = d[5] = v;
-                px = data & 3;        v = (px == 3) ? mc3 : (px == 2) ? bg2 : (px == 1) ? bgcolor[1] : bgcolor[0]; d[6] = d[7] = v;
+                uint8_t mc3 = (uint8_t)((color & 0x07) | IO_TAG_FOREGROUND);
+                uint8_t bg2 = (uint8_t)(bgcolor[2] | IO_TAG_FOREGROUND);
+                chline = chardata + ((unsigned int)sc << 3);
+                for (k = 0; k < 8; ++k)
+                {
+                    uint8_t data = chline[k];
+                    uint8_t *d;
+                    uint8_t px, v;
+                    if (!data)
+                        continue; /* all-00 pairs equal the bg0 memset */
+                    d = rows[k] + xoff;
+                    px = (data >> 6) & 3;
+                    v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                      : (px == 1)   ? bgcolor[1]
+                                                    : bgcolor[0];
+                    d[0] = d[1] = v;
+                    px = (data >> 4) & 3;
+                    v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                      : (px == 1)   ? bgcolor[1]
+                                                    : bgcolor[0];
+                    d[2] = d[3] = v;
+                    px = (data >> 2) & 3;
+                    v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                      : (px == 1)   ? bgcolor[1]
+                                                    : bgcolor[0];
+                    d[4] = d[5] = v;
+                    px = data & 3;
+                    v = (px == 3) ? mc3 : (px == 2) ? bg2
+                                      : (px == 1)   ? bgcolor[1]
+                                                    : bgcolor[0];
+                    d[6] = d[7] = v;
+                }
             }
-        }
             else
             {
-            uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
-            chline = chardata + ((unsigned int)sc << 3);
-            for (k = 0; k < 8; ++k)
-            {
-                uint8_t data = chline[k];
-                uint8_t *d;
-                if (!data)
-                    continue; /* blank glyph row: bg already memset */
-                d = rows[k] + xoff;
-                if (data & 0x80) d[0] = fg;
-                if (data & 0x40) d[1] = fg;
-                if (data & 0x20) d[2] = fg;
-                if (data & 0x10) d[3] = fg;
-                if (data & 0x08) d[4] = fg;
-                if (data & 0x04) d[5] = fg;
-                if (data & 0x02) d[6] = fg;
-                if (data & 0x01) d[7] = fg;
-            }
+                uint8_t fg = (uint8_t)(color | IO_TAG_FOREGROUND);
+                chline = chardata + ((unsigned int)sc << 3);
+                for (k = 0; k < 8; ++k)
+                {
+                    uint8_t data = chline[k];
+                    uint8_t *d;
+                    if (!data)
+                        continue; /* blank glyph row: bg already memset */
+                    d = rows[k] + xoff;
+                    if (data & 0x80)
+                        d[0] = fg;
+                    if (data & 0x40)
+                        d[1] = fg;
+                    if (data & 0x20)
+                        d[2] = fg;
+                    if (data & 0x10)
+                        d[3] = fg;
+                    if (data & 0x08)
+                        d[4] = fg;
+                    if (data & 0x04)
+                        d[5] = fg;
+                    if (data & 0x02)
+                        d[6] = fg;
+                    if (data & 0x01)
+                        d[7] = fg;
+                }
             }
         }
     }
@@ -990,9 +1042,9 @@ static void draw_mcsprite(int x, int y, int sprite, int row)
             uint8_t low_bit = data & *masks++;
             if (high_bit || low_bit)
             {
-                uint8_t color = !high_bit ? sprite_shared_colors[0]
-                              : !low_bit ? sprite_colors[sprite]
-                                         : sprite_shared_colors[1];
+                uint8_t color = !high_bit  ? sprite_shared_colors[0]
+                                : !low_bit ? sprite_colors[sprite]
+                                           : sprite_shared_colors[1];
                 sprite_pixel_run(sprite_bit, behind, dst, pixel_x, color, pair_width);
             }
             pixel_x += pair_width;
@@ -1116,12 +1168,18 @@ static void set_graphic_mode(void)
     bool bmm = (cr1 & (1 << 5)) != 0;
     bool mcm = (cr2 & (1 << 4)) != 0;
 
-    if (!ecm && !bmm && !mcm)       graphic_mode = GM_CHAR;
-    else if (!ecm && !bmm && mcm)   graphic_mode = GM_MC_CHAR;
-    else if (!ecm && bmm && !mcm)   graphic_mode = GM_BITMAP;
-    else if (!ecm && bmm && mcm)    graphic_mode = GM_MC_BITMAP;
-    else if (ecm && !bmm && !mcm)   graphic_mode = GM_EXT_BG;
-    else                            graphic_mode = GM_ILLEGAL;
+    if (!ecm && !bmm && !mcm)
+        graphic_mode = GM_CHAR;
+    else if (!ecm && !bmm && mcm)
+        graphic_mode = GM_MC_CHAR;
+    else if (!ecm && bmm && !mcm)
+        graphic_mode = GM_BITMAP;
+    else if (!ecm && bmm && mcm)
+        graphic_mode = GM_MC_BITMAP;
+    else if (ecm && !bmm && !mcm)
+        graphic_mode = GM_EXT_BG;
+    else
+        graphic_mode = GM_ILLEGAL;
 }
 
 /* ---- emulation ---------------------------------------------------------- */
@@ -1295,8 +1353,7 @@ void vic_render_catchup(void)
 
 /* Separate noinline function: folding this into vic_emulate makes the ez80
    backend crash legalizing the renderer's masked 14-bit address adds. */
-__attribute__((noinline))
-static void raster_irq_check(void)
+__attribute__((noinline)) static void raster_irq_check(void)
 {
     uint16_t line_now = (uint16_t)get_raster_counter();
     if (raster_irq_enabled_fn() && line_now == (uint16_t)raster_irq)
@@ -1346,8 +1403,8 @@ static void vic_vblank(void)
         adaptive_frame_start_ticks = (unsigned int)now;
     }
     if (vblank_advance(&frame_pacer, now,
-                      cpu_turbo_multiplier == 1 && !cpu_turbo_adaptive && !boot_hidden,
-                      frame_skip_enabled, render_requested))
+                       cpu_turbo_multiplier == 1 && !cpu_turbo_adaptive && !boot_hidden,
+                       frame_skip_enabled, render_requested))
     {
         while ((int32_t)((uint32_t)timer_Get(1) - frame_pacer.deadline) < 0)
         {
@@ -1387,7 +1444,8 @@ bool vic_emulate(void)
 
         {
             unsigned int line_cycles = is_bad_line()
-                ? VIC_BAD_LINE_CYCLES : VIC_LINE_CYCLES;
+                                           ? VIC_BAD_LINE_CYCLES
+                                           : VIC_LINE_CYCLES;
             vic_raster_due += line_cycles;
             vic_raster_due += line_cycles * (cpu_turbo_multiplier - 1u);
         }
@@ -1417,7 +1475,7 @@ bool vic_emulate(void)
    CIA and VIC once each) never count as a poll. */
 void vic_poll_check(uint8_t id)
 {
-    static int poll_key[4] = { -1, -1, -1, -1 };
+    static int poll_key[4] = {-1, -1, -1, -1};
     int key = get_raster_counter() | (int)(frame_count << 9);
     if (key == poll_key[id])
         cpu_warp = 1;
@@ -1436,44 +1494,102 @@ uint8_t vic_read_register(uint8_t r)
 
     switch (r)
     {
-    case 0x0: case 0x2: case 0x4: case 0x6:
-    case 0x8: case 0xa: case 0xc: case 0xe:
-        retval = mx[r >> 1]; break;
-    case 0x1: case 0x3: case 0x5: case 0x7:
-    case 0x9: case 0xb: case 0xd: case 0xf:
-        retval = my[r >> 1]; break;
-    case 0x10: retval = msbx; break;
-    case 0x11: retval = cr1; raster_poll_check(); break;
-    case 0x12: retval = raster_c; raster_poll_check(); break;
-    case 0x15: retval = sprite_enabled; break;
-    case 0x16: retval = cr2; break;
-    case 0x17: retval = sprite_double_height; break;
-    case 0x18: retval = mem_pointers; break;
+    case 0x0:
+    case 0x2:
+    case 0x4:
+    case 0x6:
+    case 0x8:
+    case 0xa:
+    case 0xc:
+    case 0xe:
+        retval = mx[r >> 1];
+        break;
+    case 0x1:
+    case 0x3:
+    case 0x5:
+    case 0x7:
+    case 0x9:
+    case 0xb:
+    case 0xd:
+    case 0xf:
+        retval = my[r >> 1];
+        break;
+    case 0x10:
+        retval = msbx;
+        break;
+    case 0x11:
+        retval = cr1;
+        raster_poll_check();
+        break;
+    case 0x12:
+        retval = raster_c;
+        raster_poll_check();
+        break;
+    case 0x15:
+        retval = sprite_enabled;
+        break;
+    case 0x16:
+        retval = cr2;
+        break;
+    case 0x17:
+        retval = sprite_double_height;
+        break;
+    case 0x18:
+        retval = mem_pointers;
+        break;
     case 0x19:
         retval = (0xf & irq_status);
-        if (retval != 0) retval |= 0x80;
+        if (retval != 0)
+            retval |= 0x80;
         retval |= 0x70;
         break;
-    case 0x1a: retval = (0xf0 | irq_enabled); break;
-    case 0x1b: retval = sprite_priority; break;
-    case 0x1c: retval = sprite_multicolor; break;
-    case 0x1d: retval = sprite_double_width; break;
+    case 0x1a:
+        retval = (0xf0 | irq_enabled);
+        break;
+    case 0x1b:
+        retval = sprite_priority;
+        break;
+    case 0x1c:
+        retval = sprite_multicolor;
+        break;
+    case 0x1d:
+        retval = sprite_double_width;
+        break;
     /* collision latches clear on read (hardware behaviour); flush pending
        lines first so collisions from already-executed lines are latched */
     case 0x1e:
         vic_render_catchup();
-        retval = sprite_coll_ss; sprite_coll_ss = 0; break;
+        retval = sprite_coll_ss;
+        sprite_coll_ss = 0;
+        break;
     case 0x1f:
         vic_render_catchup();
-        retval = sprite_coll_sb; sprite_coll_sb = 0; break;
-    case 0x20: retval = border_color; break;
-    case 0x21: case 0x22: case 0x23: case 0x24:
-        retval = bgcolor[r - 0x21]; break;
-    case 0x25: case 0x26:
-        retval = sprite_shared_colors[r - 0x25]; break;
-    case 0x27: case 0x28: case 0x29: case 0x2a:
-    case 0x2b: case 0x2c: case 0x2d: case 0x2e:
-        retval = sprite_colors[r - 0x27]; break;
+        retval = sprite_coll_sb;
+        sprite_coll_sb = 0;
+        break;
+    case 0x20:
+        retval = border_color;
+        break;
+    case 0x21:
+    case 0x22:
+    case 0x23:
+    case 0x24:
+        retval = bgcolor[r - 0x21];
+        break;
+    case 0x25:
+    case 0x26:
+        retval = sprite_shared_colors[r - 0x25];
+        break;
+    case 0x27:
+    case 0x28:
+    case 0x29:
+    case 0x2a:
+    case 0x2b:
+    case 0x2c:
+    case 0x2d:
+    case 0x2e:
+        retval = sprite_colors[r - 0x27];
+        break;
     default:
         retval = 0xff;
         break;
@@ -1487,36 +1603,97 @@ uint8_t vic_peek_register(uint8_t r)
 
     switch (r)
     {
-    case 0x0: case 0x2: case 0x4: case 0x6:
-    case 0x8: case 0xa: case 0xc: case 0xe: retval = mx[r >> 1]; break;
-    case 0x1: case 0x3: case 0x5: case 0x7:
-    case 0x9: case 0xb: case 0xd: case 0xf: retval = my[r >> 1]; break;
-    case 0x10: retval = msbx; break;
-    case 0x11: retval = cr1; break;
-    case 0x12: retval = raster_c; break;
-    case 0x15: retval = sprite_enabled; break;
-    case 0x16: retval = cr2; break;
-    case 0x17: retval = sprite_double_height; break;
-    case 0x18: retval = mem_pointers; break;
+    case 0x0:
+    case 0x2:
+    case 0x4:
+    case 0x6:
+    case 0x8:
+    case 0xa:
+    case 0xc:
+    case 0xe:
+        retval = mx[r >> 1];
+        break;
+    case 0x1:
+    case 0x3:
+    case 0x5:
+    case 0x7:
+    case 0x9:
+    case 0xb:
+    case 0xd:
+    case 0xf:
+        retval = my[r >> 1];
+        break;
+    case 0x10:
+        retval = msbx;
+        break;
+    case 0x11:
+        retval = cr1;
+        break;
+    case 0x12:
+        retval = raster_c;
+        break;
+    case 0x15:
+        retval = sprite_enabled;
+        break;
+    case 0x16:
+        retval = cr2;
+        break;
+    case 0x17:
+        retval = sprite_double_height;
+        break;
+    case 0x18:
+        retval = mem_pointers;
+        break;
     case 0x19:
         retval = (uint8_t)(0xf & irq_status);
-        if (retval != 0) retval |= 0x80;
+        if (retval != 0)
+            retval |= 0x80;
         retval |= 0x70;
         break;
-    case 0x1a: retval = (uint8_t)(0xf0 | irq_enabled); break;
-    case 0x1b: retval = sprite_priority; break;
-    case 0x1c: retval = sprite_multicolor; break;
-    case 0x1d: retval = sprite_double_width; break;
-    case 0x1e: retval = sprite_coll_ss; break;
-    case 0x1f: retval = sprite_coll_sb; break;
-    case 0x20: retval = border_color; break;
-    case 0x21: case 0x22: case 0x23: case 0x24:
-        retval = bgcolor[r - 0x21]; break;
-    case 0x25: case 0x26: retval = sprite_shared_colors[r - 0x25]; break;
-    case 0x27: case 0x28: case 0x29: case 0x2a:
-    case 0x2b: case 0x2c: case 0x2d: case 0x2e:
-        retval = sprite_colors[r - 0x27]; break;
-    default: retval = 0xff; break;
+    case 0x1a:
+        retval = (uint8_t)(0xf0 | irq_enabled);
+        break;
+    case 0x1b:
+        retval = sprite_priority;
+        break;
+    case 0x1c:
+        retval = sprite_multicolor;
+        break;
+    case 0x1d:
+        retval = sprite_double_width;
+        break;
+    case 0x1e:
+        retval = sprite_coll_ss;
+        break;
+    case 0x1f:
+        retval = sprite_coll_sb;
+        break;
+    case 0x20:
+        retval = border_color;
+        break;
+    case 0x21:
+    case 0x22:
+    case 0x23:
+    case 0x24:
+        retval = bgcolor[r - 0x21];
+        break;
+    case 0x25:
+    case 0x26:
+        retval = sprite_shared_colors[r - 0x25];
+        break;
+    case 0x27:
+    case 0x28:
+    case 0x29:
+    case 0x2a:
+    case 0x2b:
+    case 0x2c:
+    case 0x2d:
+    case 0x2e:
+        retval = sprite_colors[r - 0x27];
+        break;
+    default:
+        retval = 0xff;
+        break;
     }
     return retval;
 }
@@ -1528,8 +1705,13 @@ void vic_write_register(uint8_t r, uint8_t v)
        value every other line) so register-stable stripes stay whole. */
     switch (r)
     {
-    case 0x12: case 0x13: case 0x14: case 0x19: case 0x1a:
-    case 0x1e: case 0x1f: /* collision latches ignore writes */
+    case 0x12:
+    case 0x13:
+    case 0x14:
+    case 0x19:
+    case 0x1a:
+    case 0x1e:
+    case 0x1f: /* collision latches ignore writes */
         break; /* raster target / light pen / IRQ regs: no pixel effect */
     case 0x11:
         if (((cr1 ^ v) & 0x7f) != 0)
@@ -1562,13 +1744,29 @@ void vic_write_register(uint8_t r, uint8_t v)
 
     switch (r)
     {
-    case 0x0: case 0x2: case 0x4: case 0x6:
-    case 0x8: case 0xa: case 0xc: case 0xe:
-        mx[r >> 1] = v; break;
-    case 0x1: case 0x3: case 0x5: case 0x7:
-    case 0x9: case 0xb: case 0xd: case 0xf:
-        my[r >> 1] = v; break;
-    case 0x10: msbx = v; break;
+    case 0x0:
+    case 0x2:
+    case 0x4:
+    case 0x6:
+    case 0x8:
+    case 0xa:
+    case 0xc:
+    case 0xe:
+        mx[r >> 1] = v;
+        break;
+    case 0x1:
+    case 0x3:
+    case 0x5:
+    case 0x7:
+    case 0x9:
+    case 0xb:
+    case 0xd:
+    case 0xf:
+        my[r >> 1] = v;
+        break;
+    case 0x10:
+        msbx = v;
+        break;
     case 0x11:
         cr1 = (cr1 & 0x80) | (v & 0x7f);
         raster_irq &= 0xff;
@@ -1578,31 +1776,61 @@ void vic_write_register(uint8_t r, uint8_t v)
     case 0x12:
         raster_irq = v | (raster_irq & (1 << 8));
         break;
-    case 0x15: sprite_enabled = v; break;
-    case 0x16: cr2 = v; set_graphic_mode(); break;
-    case 0x17: sprite_double_height = v; break;
+    case 0x15:
+        sprite_enabled = v;
+        break;
+    case 0x16:
+        cr2 = v;
+        set_graphic_mode();
+        break;
+    case 0x17:
+        sprite_double_height = v;
+        break;
     case 0x18:
-        char_mem   = (v & 0xe) << 10;
+        char_mem = (v & 0xe) << 10;
         screen_mem = (v & 0xf0) << 6;
         bitmap_mem = (v & 0x8) << 10;
         mem_pointers = v | (1 << 0);
         break;
-    case 0x19: irq_status &= ~(v & 0xf); break;
-    case 0x1a: irq_enabled = v; break;
-    case 0x1b: sprite_priority = v; break;
-    case 0x1c: sprite_multicolor = v; break;
-    case 0x1d: sprite_double_width = v; break;
+    case 0x19:
+        irq_status &= ~(v & 0xf);
+        break;
+    case 0x1a:
+        irq_enabled = v;
+        break;
+    case 0x1b:
+        sprite_priority = v;
+        break;
+    case 0x1c:
+        sprite_multicolor = v;
+        break;
+    case 0x1d:
+        sprite_double_width = v;
+        break;
     case 0x20:
         border_color = v & 0x0f;
         break;
-    case 0x21: case 0x22: case 0x23: case 0x24:
+    case 0x21:
+    case 0x22:
+    case 0x23:
+    case 0x24:
         bgcolor[r - 0x21] = v & 0x0f;
         break;
-    case 0x25: case 0x26:
-        sprite_shared_colors[r - 0x25] = v & 0x0f; break;
-    case 0x27: case 0x28: case 0x29: case 0x2a:
-    case 0x2b: case 0x2c: case 0x2d: case 0x2e:
-        sprite_colors[r - 0x27] = v & 0x0f; break;
-    default: break;
+    case 0x25:
+    case 0x26:
+        sprite_shared_colors[r - 0x25] = v & 0x0f;
+        break;
+    case 0x27:
+    case 0x28:
+    case 0x29:
+    case 0x2a:
+    case 0x2b:
+    case 0x2c:
+    case 0x2d:
+    case 0x2e:
+        sprite_colors[r - 0x27] = v & 0x0f;
+        break;
+    default:
+        break;
     }
 }

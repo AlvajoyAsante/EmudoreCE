@@ -1,5 +1,6 @@
 /*
  * emudore-CE: MOS 6526 CIA #2 (C port of cia2.cpp).
+ * https://www.c64-wiki.com/wiki/CIA
  */
 #include "cia2.h"
 #include "cpu.h"
@@ -88,7 +89,7 @@ uint8_t cia2_read_register(uint8_t r)
     switch (r)
     {
     case 0x0:
-        retval = pra;
+        retval = (pra & 0x3f) | 0xc0;
         vic_poll_check(3); /* IEC bit-bang waits: nothing to receive, warp */
         break;
     case 0x1: retval = prb; break;
@@ -111,27 +112,7 @@ uint8_t cia2_read_register(uint8_t r)
 
 uint8_t cia2_peek_register(uint8_t r)
 {
-    uint8_t retval = 0;
-
-    switch (r)
-    {
-    case 0x0: retval = pra; break;
-    case 0x1: retval = prb; break;
-    case 0x4: retval = (uint8_t)(timer_a_counter & 0x00ff); break;
-    case 0x5: retval = (uint8_t)((timer_a_counter & 0xff00) >> 8); break;
-    case 0x6: retval = (uint8_t)(timer_b_counter & 0x00ff); break;
-    case 0x7: retval = (uint8_t)((timer_b_counter & 0xff00) >> 8); break;
-    case 0xd:
-        if (timer_a_irq_triggered || timer_b_irq_triggered)
-        {
-            retval |= 1 << 7;
-            if (timer_a_irq_triggered) retval |= 1 << 0;
-            if (timer_b_irq_triggered) retval |= 1 << 1;
-        }
-        break;
-    default: break;
-    }
-    return retval;
+    return cia2_read_register(r);
 }
 
 /* PRA bits 0-1 select the 16 KiB VIC bank (inverted). */
