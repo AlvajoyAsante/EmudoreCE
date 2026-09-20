@@ -1,4 +1,4 @@
-# <center><img src="docs/emudore-ce-icon.png" alt="Emudore CE icon" width="50%"  /></center>
+# <img src="docs/emudore-ce-icon.png" alt="Emudore CE icon" width="50%" align="center"/>
 
 Emudore CE is a Commodore 64 emulator for the TI-84 Plus CE, built around a portable C core with CE-specific I/O, ROM packaging, and a native JIT path for the eZ80 target. The project aims to preserve the behavior of classic C64 software while staying within TI-OS memory and runtime constraints.
 
