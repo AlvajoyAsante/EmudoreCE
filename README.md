@@ -15,9 +15,9 @@ Learn more about the original system: [C64 Wiki](https://www.c64-wiki.com/)
 
 ## Screenshots
 
-| <div align="center"><img src="docs/screenshots/demo%201.png" alt="Demo 1" width="220" /><br>Demo 1</div> | <div align="center"><img src="docs/screenshots/demo%202.png" alt="Demo 2" width="220" /><br>Demo 2</div> | <div align="center"><img src="docs/screenshots/demo%203.png" alt="Demo 3" width="220" /><br>Demo 3</div> |
+| <div align="center"><img src="docs/screenshots/demo%201.png" alt="Demo 1"  /><br>Demo 1</div> | <div align="center"><img src="docs/screenshots/demo%202.png" alt="Demo 2"  /><br>Demo 2</div> | <div align="center"><img src="docs/screenshots/demo%203.png" alt="Demo 3"  /><br>Demo 3</div> |
 | --- | --- | --- |
-| <div align="center"><img src="docs/screenshots/paralax.png" alt="Parallax" width="220" /><br><strong>Parallax</strong></div> | <div align="center"><img src="docs/screenshots/packman.png" alt="Pac-Man" width="220" /><br><strong>Pac-Man</strong></div> |  |
+| <div align="center"><img src="docs/screenshots/paralax.png" alt="Parallax"  /><br><strong>Parallax</strong></div> | <div align="center"><img src="docs/screenshots/packman.png" alt="Pac-Man"  /><br><strong>Pac-Man</strong></div> |  |
 
 ## Current status
 
